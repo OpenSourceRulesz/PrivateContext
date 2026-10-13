@@ -56,6 +56,8 @@ pctx import --browser chrome                # or edge, firefox
 pctx import --browser firefox --profile ~/path/to/places.sqlite
 pctx import --activitywatch ~/path/to/activitywatch.db
 pctx import --screenpipe ~/path/to/screenpipe.db
+pctx import --csv ~/Downloads/rewind-export.csv      # any local CSV export
+pctx import --json ~/Downloads/tool-export.json     # any local JSON export
 pctx import --browser chrome --dry-run      # preview: counts + samples, no writes
 ```
 
@@ -74,6 +76,12 @@ pctx import --browser chrome --dry-run      # preview: counts + samples, no writ
 - Re-running an import only picks up newer rows (watermarks in the `kv`
   table). Keystroke contents are never imported under any circumstance —
   if a source DB looks like it holds them, the import is refused outright.
+- **Anything else:** exported your history from another tool as CSV or
+  JSON? `pctx import --csv/--json` reads it — columns/keys like
+  `timestamp`, `type`, `app`, `title`, `url` are recognized, timestamps
+  accept unix/ISO/Chrome-epoch formats. Our rule is simple: we never call
+  cloud APIs, but a local file you exported yourself is yours — hand it
+  over and we'll ingest it. Encrypted exports we can't decrypt stay out.
 
 ### What import can't do (honest edition)
 
@@ -219,7 +227,7 @@ privatecontext/
   summarize.py              nightly Ollama summarizer (condensed digest -> days table)
   mcp_server.py             first-party MCP server over stdio (search/summary/usage)
   cli.py                    `pctx` entry point
-  importers.py              `pctx import` — browser / ActivityWatch / Screenpipe
+  importers.py              `pctx import` — browser / ActivityWatch / Screenpipe / CSV / JSON
 ```
 
 MIT licensed. Your data stays yours.

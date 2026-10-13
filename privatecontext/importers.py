@@ -7,11 +7,12 @@ All importers share the same contract:
     `import:<source>:<id>` = max imported timestamp (or row id). Re-running
     an import only picks up newer rows.
   - `--dry-run` prints counts + sample rows and changes nothing.
-  - Keystroke *contents* are never imported. If a source database appears to
-    hold keystroke text, the import is refused outright.
+  - Keystroke *contents* are never imported. If a source appears to hold
+    keystroke text, the import is refused outright.
 """
 from __future__ import annotations
 
+import csv
 import json
 import os
 import re
@@ -459,3 +460,113 @@ def import_screenpipe(con: sqlite3.Connection, path: str,
         set_watermark(con, "screenpipe", t, float(mx))
     con.commit()
     return 0
+
+
+# --------------------------------------------------------------------------
+# generic CSV / JSON (for local exports from any other tool)
+# --------------------------------------------------------------------------
+
+# Accepted header/key names (case-insensitive) for generic imports.
+_FIELD_ALIASES = {
+    "ts": {"ts", "timestamp", "time", "datetime", "date", "when"},
+    "type": {"type", "event", "event_type", "kind"},
+    "app": {"app", "application", "program", "source", "browser"},
+    "title": {"title", "name", "subject", "text", "window", "page"},
+    "url": {"url", "link", "href"},
+}
+
+
+def _normalize_record(raw: dict) -> dict | None:
+    """Map an arbitrary dict to an event row. Returns None if unusable."""
+    lowered = {(k or "").strip().lower(): v for k, v in raw.items()}
+    for k in lowered:
+        if KEYSTROKE_COL_RE.match(k):
+            raise RefusedError(
+                f"refusing generic import: field '{k}' looks like keystroke "
+                "contents. PrivateContext never imports keystrokes.")
+    get = {}
+    for field, aliases in _FIELD_ALIASES.items():
+        for a in aliases:
+            if a in lowered and lowered[a] not in (None, ""):
+                get[field] = lowered[a]
+                break
+    ts = _parse_ts(get.get("ts"))
+    if ts is None:
+        return None
+    etype = str(get.get("type") or "").strip().lower() or None
+    if etype not in ("window", "url", "click", "afk", "back", "ocr",
+                     "transcript"):
+        etype = "url" if get.get("url") else "window"
+    return {"ts": ts, "type": etype, "app": get.get("app"),
+            "title": get.get("title"), "url": get.get("url")}
+
+
+def _import_records(con: sqlite3.Connection, source: str, sid: str,
+                    raws: list[dict], label: str, dry_run: bool) -> int:
+    wm = get_watermark(con, source, sid)
+    rows: list[dict] = []
+    skipped = 0
+    for raw in raws:
+        try:
+            row = _normalize_record(raw)
+        except RefusedError:
+            raise
+        if row is None:
+            skipped += 1
+            continue
+        if wm is not None and row["ts"] <= wm:
+            continue
+        rows.append(row)
+    lo = min((r["ts"] for r in rows), default=None)
+    hi = max((r["ts"] for r in rows), default=None)
+    _report(label, len(rows), skipped, lo, hi, rows, dry_run)
+    if dry_run or not rows:
+        return 0
+    for r in rows:
+        log_event(con, r["type"], ts=r["ts"], app=r.get("app"),
+                  title=r.get("title"), url=r.get("url"), commit=False)
+    con.commit()
+    set_watermark(con, source, sid, hi)
+    con.commit()
+    return 0
+
+
+def import_csv(con: sqlite3.Connection, path: str,
+               dry_run: bool = False) -> int:
+    src = Path(path)
+    if not src.is_file():
+        print(f"no file at {path}", file=sys.stderr)
+        return 1
+    with open(src, newline="", encoding="utf-8-sig") as f:
+        raws = list(csv.DictReader(f))
+    if not raws:
+        print(f"{path}: no data rows found.", file=sys.stderr)
+        return 1
+    return _import_records(con, "csv", str(src), raws,
+                           f"CSV import ({src.name})", dry_run)
+
+
+def import_json(con: sqlite3.Connection, path: str,
+                dry_run: bool = False) -> int:
+    src = Path(path)
+    if not src.is_file():
+        print(f"no file at {path}", file=sys.stderr)
+        return 1
+    try:
+        data = json.loads(src.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError as e:
+        print(f"{path}: not valid JSON ({e})", file=sys.stderr)
+        return 1
+    if isinstance(data, dict):
+        # allow {"events": [...]} style wrappers
+        for key in ("events", "rows", "data", "history"):
+            if isinstance(data.get(key), list):
+                data = data[key]
+                break
+    if not isinstance(data, list) or not data:
+        print(f"{path}: expected a JSON array of event objects.",
+              file=sys.stderr)
+        return 1
+    raws = [r for r in data if isinstance(r, dict)]
+    return _import_records(con, "json", str(src), raws,
+                           f"JSON import ({src.name})", dry_run)

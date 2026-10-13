@@ -13,7 +13,7 @@ from .capture import run_capture, simulate
 from .dashboard import serve
 from .db import connect, counts, default_db_path, init_db
 from .importers import (RefusedError, import_activitywatch, import_browser,
-                        import_screenpipe)
+                        import_csv, import_json, import_screenpipe)
 from .summarize import DEFAULT_MODEL, summarize_day
 
 
@@ -135,6 +135,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="path to an ActivityWatch SQLite database")
     i.add_argument("--screenpipe", default=None, metavar="PATH",
                    help="path to a Screenpipe SQLite database")
+    i.add_argument("--csv", default=None, metavar="PATH",
+                   help="path to a CSV export (columns: timestamp, type, "
+                        "app, title, url)")
+    i.add_argument("--json", default=None, metavar="PATH",
+                   help="path to a JSON export (array of event objects)")
     i.add_argument("--dry-run", action="store_true",
                    help="print what would be imported without writing anything")
     i.set_defaults(func=cmd_import)
@@ -142,11 +147,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def cmd_import(args: argparse.Namespace) -> int:
-    sources = [s for s in (args.browser, args.activitywatch, args.screenpipe)
-               if s]
+    sources = [s for s in (args.browser, args.activitywatch, args.screenpipe,
+                           args.csv, args.json) if s]
     if len(sources) != 1:
         print("pick exactly one source: --browser chrome|edge|firefox, "
-              "--activitywatch PATH, or --screenpipe PATH", file=sys.stderr)
+              "--activitywatch PATH, --screenpipe PATH, --csv PATH, or "
+              "--json PATH", file=sys.stderr)
         return 2
     db = _resolve_db(args.db) if args.db else default_db_path()
     con = connect(db)
@@ -158,7 +164,11 @@ def cmd_import(args: argparse.Namespace) -> int:
         if args.activitywatch:
             return import_activitywatch(con, args.activitywatch,
                                         dry_run=args.dry_run)
-        return import_screenpipe(con, args.screenpipe, dry_run=args.dry_run)
+        if args.screenpipe:
+            return import_screenpipe(con, args.screenpipe, dry_run=args.dry_run)
+        if args.csv:
+            return import_csv(con, args.csv, dry_run=args.dry_run)
+        return import_json(con, args.json, dry_run=args.dry_run)
     except RefusedError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
