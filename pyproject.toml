@@ -12,6 +12,7 @@ requires-python = ">=3.9"
 dependencies = [
     "pynput",  # click + activity-timestamp watchers
     "mss",     # screenshots (opt-in only)
+    "pillow",  # JPEG screenshot encoding (opt-in screenshots)
     "mcp>=2",  # first-party MCP server (`pctx mcp`), stdio transport
 ]
 

@@ -12,7 +12,7 @@ Live mode:
     in v0); query params and fragments are ALWAYS stripped before storage.
   * Screenshots: OFF by default. With --screenshots, the primary monitor is
     captured on app-switch / URL-change only, downscaled to 640 px wide and
-    stored as PNG (stdlib encoder, no Pillow) under shots/YYYY-MM-DD/.
+    stored as JPEG (quality 70, Pillow) under shots/YYYY-MM-DD/.
 
 Simulate mode (--simulate): writes a realistic synthetic workday straight
 into the DB. No OS hooks, no pynput, no mss — runs anywhere, including
@@ -24,12 +24,10 @@ import ctypes
 import platform
 import re
 import shutil
-import struct
 import subprocess
 import sys
 import threading
 import time
-import zlib
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -140,8 +138,11 @@ def browser_url(app: str | None, title: str | None) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Screenshots (opt-in): downscaled PNG via stdlib, no Pillow
+# Screenshots (opt-in): downscaled JPEG via Pillow
 # ---------------------------------------------------------------------------
+
+JPEG_QUALITY = 70
+
 
 def _downscale_rgb(rgb: bytes, w: int, h: int, target_w: int = SHOT_MAX_W):
     if w <= target_w:
@@ -158,17 +159,10 @@ def _downscale_rgb(rgb: bytes, w: int, h: int, target_w: int = SHOT_MAX_W):
     return bytes(out), tw, th
 
 
-def _write_png(path: Path, rgb: bytes, w: int, h: int) -> None:
-    def chunk(ctype: bytes, data: bytes) -> bytes:
-        c = struct.pack(">I", len(data)) + ctype + data
-        return c + struct.pack(">I", zlib.crc32(ctype + data) & 0xFFFFFFFF)
-
-    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
-    raw = b"".join(b"\x00" + rgb[y * w * 3:(y + 1) * w * 3] for y in range(h))
-    path.write_bytes(b"\x89PNG\r\n\x1a\n"
-                     + chunk(b"IHDR", ihdr)
-                     + chunk(b"IDAT", zlib.compress(raw, 6))
-                     + chunk(b"IEND", b""))
+def _write_jpeg(path: Path, rgb: bytes, w: int, h: int,
+                quality: int = JPEG_QUALITY) -> None:
+    from PIL import Image
+    Image.frombytes("RGB", (w, h), rgb).save(path, "JPEG", quality=quality)
 
 
 def take_screenshot(ts: float) -> str | None:
@@ -179,15 +173,20 @@ def take_screenshot(ts: float) -> str | None:
         warn_once("mss", f"mss unavailable ({e}): screenshots disabled")
         return None
     try:
+        from PIL import Image  # noqa: F401  (import check; used in _write_jpeg)
+    except Exception as e:
+        warn_once("pil", f"Pillow unavailable ({e}): screenshots disabled")
+        return None
+    try:
         with mss.mss() as sct:
             mon = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
             shot = sct.grab(mon)
         rgb, w, h = _downscale_rgb(shot.rgb, shot.width, shot.height)
         dt = datetime.fromtimestamp(ts).astimezone()
-        rel = Path("shots") / dt.strftime("%Y-%m-%d") / (dt.strftime("%H%M%S") + ".png")
+        rel = Path("shots") / dt.strftime("%Y-%m-%d") / (dt.strftime("%H%M%S") + ".jpg")
         p = data_dir() / rel
         p.parent.mkdir(parents=True, exist_ok=True)
-        _write_png(p, rgb, w, h)
+        _write_jpeg(p, rgb, w, h)
         return str(rel)
     except Exception as e:
         warn_once("shot-err", f"screenshot failed: {e}")
@@ -276,7 +275,7 @@ def run_capture(db_path: str | None = None, screenshots: bool = False) -> None:
                 if screenshots and (sig[0] != last_sig[0] or url != last_url):
                     rel = take_screenshot(now)
                     log_event(con, "shot", app=sig[0], title=sig[1], url=url)
-                    # shot path is derivable from ts: shots/YYYY-MM-DD/HHMMSS.png
+                    # shot path is derivable from ts: shots/YYYY-MM-DD/HHMMSS.jpg
                     _ = rel
                 last_sig, last_url = sig, url
             time.sleep(POLL_S)

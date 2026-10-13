@@ -15,6 +15,7 @@ from .db import connect, counts, default_db_path, init_db
 from .importers import (RefusedError, import_activitywatch, import_browser,
                         import_csv, import_json, import_screenpipe)
 from .summarize import DEFAULT_MODEL, summarize_day
+from .tagging import extract_tags
 
 
 def _resolve_db(path: str) -> str:
@@ -60,7 +61,14 @@ def cmd_export(args: argparse.Namespace) -> int:
     # Quote the path for ATTACH: sqlite string literal, ''-escaped.
     lit = "'" + src_path.replace("'", "''") + "'"
     dst.execute(f"ATTACH DATABASE {lit} AS src")
-    dst.execute("INSERT INTO events SELECT * FROM src.events WHERE type != 'shot'")
+    # Column-explicit copy so pre-tags databases still export cleanly.
+    src_cols = [r[1] for r in dst.execute("PRAGMA src.table_info(events)")]
+    cols = ["ts", "type", "app", "title", "url", "x", "y", "duration_ms"]
+    if "tags" in src_cols:
+        cols.append("tags")
+    col_list = ",".join(cols)
+    dst.execute(f"INSERT INTO events({col_list}) SELECT {col_list} FROM src.events"
+                " WHERE type != 'shot'")
     dst.execute("INSERT INTO days SELECT * FROM src.days")
     dst.execute("INSERT INTO kv SELECT * FROM src.kv")
     dst.commit()
@@ -126,6 +134,11 @@ def build_parser() -> argparse.ArgumentParser:
     m = sub.add_parser("mcp", help="run the MCP server over stdio")
     m.set_defaults(func=cmd_mcp)
 
+    r = sub.add_parser("retag", help="backfill auto-tags on untagged events")
+    r.add_argument("--since", default=None,
+                   help="only retag events on/after YYYY-MM-DD")
+    r.set_defaults(func=cmd_retag)
+
     i = sub.add_parser("import", help="import history from browsers or other recorders")
     i.add_argument("--browser", choices=["chrome", "edge", "firefox"], default=None,
                    help="import this browser's history")
@@ -172,6 +185,38 @@ def cmd_import(args: argparse.Namespace) -> int:
     except RefusedError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
+
+
+def cmd_retag(args: argparse.Namespace) -> int:
+    from datetime import datetime as _dt
+    db = _resolve_db(args.db) if args.db else default_db_path()
+    if not Path(db).exists():
+        print(f"no database at {db} — run `pctx capture` first", file=sys.stderr)
+        return 1
+    con = connect(db)
+    init_db(con)
+    q = ("SELECT id, app, title, url FROM events"
+         " WHERE (tags IS NULL OR tags = '')")
+    params: list = []
+    if args.since:
+        try:
+            since_ts = _dt.strptime(args.since, "%Y-%m-%d").astimezone().timestamp()
+        except ValueError:
+            print("--since must be YYYY-MM-DD", file=sys.stderr)
+            return 2
+        q += " AND ts >= ?"
+        params.append(since_ts)
+    rows = con.execute(q, params).fetchall()
+    tagged = 0
+    for r in rows:
+        found = extract_tags(r["app"], r["title"], r["url"])
+        tag_str = ",".join(found) if found else None
+        con.execute("UPDATE events SET tags = ? WHERE id = ?", (tag_str, r["id"]))
+        if tag_str:
+            tagged += 1
+    con.commit()
+    print(f"[privatecontext] retagged {tagged} of {len(rows)} scanned events")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

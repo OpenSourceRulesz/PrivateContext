@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS events(
   url         TEXT,               -- browser URL with query params + fragment stripped
   x           INTEGER,            -- click x (click events only)
   y           INTEGER,            -- click y (click events only)
-  duration_ms INTEGER             -- idle duration (back events only)
+  duration_ms INTEGER,            -- idle duration (back events only)
+  tags        TEXT                -- comma-separated auto tags (tagging.py); NULL = untagged
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts   ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);

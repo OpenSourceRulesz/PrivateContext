@@ -7,6 +7,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from .tagging import extract_tags
+
 APP_NAME = "privatecontext"
 DB_NAME = "context.db"
 
@@ -41,6 +43,10 @@ def connect(path: str | None = None) -> sqlite3.Connection:
 
 def init_db(con: sqlite3.Connection) -> None:
     con.executescript(_schema_text())
+    # Migration for databases created before the tags column existed.
+    cols = [r[1] for r in con.execute("PRAGMA table_info(events)")]
+    if "tags" not in cols:
+        con.execute("ALTER TABLE events ADD COLUMN tags TEXT")
     con.commit()
 
 
@@ -55,12 +61,20 @@ def log_event(con: sqlite3.Connection, type: str, ts: float | None = None,
               app: str | None = None, title: str | None = None,
               url: str | None = None, x: int | None = None,
               y: int | None = None, duration_ms: int | None = None,
+              tags: str | list | None = None,
               commit: bool = True) -> int:
+    if tags is None:
+        found = extract_tags(app, title, url)
+        tag_str = ",".join(found) if found else None
+    elif isinstance(tags, (list, tuple)):
+        tag_str = ",".join(tags) if tags else None
+    else:
+        tag_str = tags or None
     cur = con.execute(
-        "INSERT INTO events(ts, type, app, title, url, x, y, duration_ms)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO events(ts, type, app, title, url, x, y, duration_ms, tags)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (ts if ts is not None else time.time(), type, app, title,
-         strip_url(url), x, y, duration_ms),
+         strip_url(url), x, y, duration_ms, tag_str),
     )
     if commit:
         con.commit()
@@ -76,7 +90,7 @@ def today_range() -> tuple[float, float]:
 def timeline(con: sqlite3.Connection, limit: int = 200) -> list[dict]:
     start, _ = today_range()
     rows = con.execute(
-        "SELECT id, ts, type, app, title, url, x, y, duration_ms FROM events"
+        "SELECT id, ts, type, app, title, url, x, y, duration_ms, tags FROM events"
         " WHERE ts >= ? ORDER BY ts DESC LIMIT ?",
         (start, limit),
     ).fetchall()

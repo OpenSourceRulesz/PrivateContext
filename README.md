@@ -103,6 +103,24 @@ pctx import --browser chrome --dry-run      # preview: counts + samples, no writ
   timestamps are UTC; ActivityWatch event timestamps carry their offsets;
   anything ambiguous is stored as-is rather than guessed.
 
+## Auto-tagging
+
+Every captured or imported event gets heuristic tags, stored in the
+`events.tags` column and shown in the dashboard timeline:
+
+- **Ticket IDs** — `INC0012345` (ServiceNow-style, 5+ digits) and
+  `PROJ-123` (JIRA-style) picked out of window titles and URLs.
+- **Project guess** — for dev apps (VS Code, terminals, JetBrains IDEs),
+  the leading window-title segment is kept as a project tag when it looks
+  like a folder/repo name (`privatecontext — capture.py` →
+  `privatecontext`). UI-chrome words (`Settings`, `Extensions`, …) are
+  on a stoplist.
+
+It's a heuristic and it misfires: `UTF-8` matches the JIRA pattern, and
+a folder named `New Folder` won't tag. Tags are lowercase, deduped, and
+cheap to recompute — `pctx retag [--since YYYY-MM-DD]` re-runs tagging
+over untagged history (e.g. data imported before tagging existed).
+
 ## Nightly summaries (Ollama)
 
 Once a day, a small local model reads a *condensed digest* of the day —
@@ -194,7 +212,7 @@ Then ask things like *"what was I doing Tuesday afternoon?"* or
   `&sys_id=…`) are removed before anything is stored.
 - **Screenshots are off by default.** Opt in with `pctx capture --screenshots`;
   then only the active monitor is captured, only on app-switch/URL-change,
-  downscaled to 640 px wide.
+  downscaled to 640 px wide, stored as JPEG (quality 70).
 - **One-click purge.** The dashboard has a big red button that deletes
   everything. `pctx export --scrubbed` excludes screenshots and shot events.
 
@@ -208,7 +226,10 @@ Then ask things like *"what was I doing Tuesday afternoon?"* or
 - **Browser URLs are macOS-only in v0** (AppleScript, needs permission).
   Everywhere else the window title is logged and the URL stays empty until
   the browser-extension story lands.
-- **Screenshots are PNG, not JPEG** (stdlib encoder, no Pillow dependency yet).
+- **Auto-tagging is heuristic.** It catches ticket IDs and project names
+  from window titles, but it will misfire sometimes ("UTF-8" looks like a
+  JIRA ticket to a regex). Tags are cheap to recompute — `pctx retag`
+  re-runs them over history.
 - **No phone support, by design.** This is a desktop capture tool; phones get
   nothing. The nightly summaries are readable anywhere, but capture stays
   on your computer.
@@ -226,8 +247,9 @@ privatecontext/
   db.py                     sqlite helpers, FTS5 search, usage aggregation
   summarize.py              nightly Ollama summarizer (condensed digest -> days table)
   mcp_server.py             first-party MCP server over stdio (search/summary/usage)
-  cli.py                    `pctx` entry point
+  cli.py                    `pctx` entry point (incl. `pctx retag`)
   importers.py              `pctx import` — browser / ActivityWatch / Screenpipe / CSV / JSON
+  tagging.py                heuristic auto-tags: ticket IDs + project guesses
 ```
 
 MIT licensed. Your data stays yours.

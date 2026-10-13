@@ -63,6 +63,7 @@ function evHTML(e){
     '<span class="ty">'+esc(e.type)+'</span> '+
     '<b>'+esc(e.app)+'</b> &mdash; '+esc(e.title)+
     (e.url ? ' <a href="'+esc(e.url)+'">link</a>' : '')+
+    (e.tags ? ' <span class="c">['+esc(e.tags)+']</span>' : '')+
     (e.x!=null ? ' <span class="c">click@'+e.x+','+e.y+'</span>' : '')+
     (e.duration_ms!=null ? ' <span class="c">'+Math.round(e.duration_ms/1000)+'s idle</span>' : '')+
     '</div>';
