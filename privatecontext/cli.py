@@ -12,6 +12,8 @@ from . import __version__
 from .capture import run_capture, simulate
 from .dashboard import serve
 from .db import connect, counts, default_db_path, init_db
+from .importers import (RefusedError, import_activitywatch, import_browser,
+                        import_screenpipe)
 from .summarize import DEFAULT_MODEL, summarize_day
 
 
@@ -123,7 +125,43 @@ def build_parser() -> argparse.ArgumentParser:
 
     m = sub.add_parser("mcp", help="run the MCP server over stdio")
     m.set_defaults(func=cmd_mcp)
+
+    i = sub.add_parser("import", help="import history from browsers or other recorders")
+    i.add_argument("--browser", choices=["chrome", "edge", "firefox"], default=None,
+                   help="import this browser's history")
+    i.add_argument("--profile", default=None,
+                   help="path to the browser profile History / places.sqlite file")
+    i.add_argument("--activitywatch", default=None, metavar="PATH",
+                   help="path to an ActivityWatch SQLite database")
+    i.add_argument("--screenpipe", default=None, metavar="PATH",
+                   help="path to a Screenpipe SQLite database")
+    i.add_argument("--dry-run", action="store_true",
+                   help="print what would be imported without writing anything")
+    i.set_defaults(func=cmd_import)
     return ap
+
+
+def cmd_import(args: argparse.Namespace) -> int:
+    sources = [s for s in (args.browser, args.activitywatch, args.screenpipe)
+               if s]
+    if len(sources) != 1:
+        print("pick exactly one source: --browser chrome|edge|firefox, "
+              "--activitywatch PATH, or --screenpipe PATH", file=sys.stderr)
+        return 2
+    db = _resolve_db(args.db) if args.db else default_db_path()
+    con = connect(db)
+    init_db(con)
+    try:
+        if args.browser:
+            return import_browser(con, args.browser, profile=args.profile,
+                                  dry_run=args.dry_run)
+        if args.activitywatch:
+            return import_activitywatch(con, args.activitywatch,
+                                        dry_run=args.dry_run)
+        return import_screenpipe(con, args.screenpipe, dry_run=args.dry_run)
+    except RefusedError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
 
 
 def main(argv: list[str] | None = None) -> int:

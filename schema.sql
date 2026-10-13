@@ -1,5 +1,7 @@
 -- PrivateContext v0 schema.
--- Raw event log. `type` is one of: window, click, afk, back, shot.
+-- Raw event log. `type` is one of: window, click, afk, back, shot,
+-- url (browser visits, incl. imported history), ocr (imported OCR text),
+-- transcript (imported audio transcripts).
 -- Keystroke *contents* are never stored: clicks log coordinates only,
 -- keyboard input is used solely as an activity timestamp for AFK detection.
 CREATE TABLE IF NOT EXISTS events(

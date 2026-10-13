@@ -46,6 +46,55 @@ pctx export --scrubbed --out ./my-week.db
 Data lives in `~/.local/share/privatecontext/context.db`
 (or `$XDG_DATA_HOME/privatecontext/context.db`).
 
+## Importing your history
+
+Day one with a fresh tracker is empty. `pctx import` backfills history
+from your browser and from other recorders — data liberation, not lock-in.
+
+```bash
+pctx import --browser chrome                # or edge, firefox
+pctx import --browser firefox --profile ~/path/to/places.sqlite
+pctx import --activitywatch ~/path/to/activitywatch.db
+pctx import --screenpipe ~/path/to/screenpipe.db
+pctx import --browser chrome --dry-run      # preview: counts + samples, no writes
+```
+
+- **Browsers:** reads Chrome/Edge `History` (`urls` table) and Firefox
+  `places.sqlite` (`moz_places`). The database is always copied to a temp
+  file first — your browser can stay open. Query params are stripped, same
+  as live capture. Default profile paths are auto-detected per OS; use
+  `--profile` if yours lives elsewhere.
+- **ActivityWatch:** detects the AW schema at runtime (`buckets` + `events`
+  tables). Window/app events become `window` events, AFK buckets become
+  `afk`/`back`, web-watcher events become `url` events. Anything unmappable
+  is skipped and counted.
+- **Screenpipe:** imports OCR text as `ocr` events and audio transcripts as
+  `transcript` events. **Video/audio blobs are never imported** — that's the
+  heaviness we're escaping.
+- Re-running an import only picks up newer rows (watermarks in the `kv`
+  table). Keystroke contents are never imported under any circumstance —
+  if a source DB looks like it holds them, the import is refused outright.
+
+### What import can't do (honest edition)
+
+- **It can't invent data the old tool never captured.** ActivityWatch never
+  logged clicks, so an AW import has no clicks. Your history starts where
+  their capture did.
+- **Screenshots and video/audio blobs stay behind.** Importing Screenpipe's
+  mp4s would just re-create the 2 GB/day problem this project exists to
+  escape. Text comes over; pixels don't.
+- **Encrypted or cloud-locked stores can't be read.** Tools that keep your
+  data in their cloud (e.g. Rewind) have no local database to import from —
+  and PrivateContext will never add cloud APIs to fetch it. That's the point.
+- **Imported history inherits the old tool's flaws.** AW's AFK misfires
+  (video watching logged as idle) come along as-is. We don't rewrite history;
+  live capture from today onward is clean.
+- **Stop the old tool yourself** (or you'll double-capture the same hours
+  into two databases). Import is a migration, not a sync.
+- **Timezone normalization is best-effort** for very old data. Chrome
+  timestamps are UTC; ActivityWatch event timestamps carry their offsets;
+  anything ambiguous is stored as-is rather than guessed.
+
 ## Nightly summaries (Ollama)
 
 Once a day, a small local model reads a *condensed digest* of the day —
@@ -170,6 +219,7 @@ privatecontext/
   summarize.py              nightly Ollama summarizer (condensed digest -> days table)
   mcp_server.py             first-party MCP server over stdio (search/summary/usage)
   cli.py                    `pctx` entry point
+  importers.py              `pctx import` — browser / ActivityWatch / Screenpipe
 ```
 
 MIT licensed. Your data stays yours.
