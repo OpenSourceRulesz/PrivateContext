@@ -14,6 +14,12 @@ lets AI assistants query the diary.
 ## 10-minute setup
 
 ```bash
+pip install privatecontext
+```
+
+Or install from source:
+
+```bash
 cd privatecontext
 python3 -m venv .venv && .venv/bin/pip install -e .
 ```
