@@ -87,20 +87,98 @@ def _active_window_macos() -> dict | None:
     return {"app": app or None, "title": title or None}
 
 
+# exe stem (lowercased, no .exe) -> friendly name. Case-insensitive match.
+_FRIENDLY_APPS = {
+    "msedge": "Edge",
+    "chrome": "Chrome",
+    "firefox": "Firefox",
+    "code": "VS Code",
+    "windowsterminal": "Terminal",
+    "powershell": "PowerShell",
+    "pwsh": "PowerShell",
+    "explorer": "Explorer",
+    "teams": "Teams",
+    "outlook": "Outlook",
+    "onenote": "OneNote",
+    "notepad": "Notepad",
+    "spotify": "Spotify",
+    "zoom": "Zoom",
+    "slack": "Slack",
+}
+
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def extract_app_name(exe_path: str | None) -> str | None:
+    """Map an executable path to a friendly app name. Pure function —
+    handles Windows/posix separators and any case. Never raises."""
+    try:
+        if not exe_path:
+            return None
+        stem = exe_path.replace("/", "\\").rsplit("\\", 1)[-1]
+        if stem.lower().endswith(".exe"):
+            stem = stem[:-4]
+        if not stem:
+            return None
+        friendly = _FRIENDLY_APPS.get(stem.lower())
+        if friendly:
+            return friendly
+        return stem.replace("_", " ").title()
+    except Exception:
+        return None
+
+
+def _exe_path_of_pid(kernel32, pid: int) -> str | None:
+    """Full exe path for a PID via OpenProcess + QueryFullProcessImageNameW.
+    Returns None on any failure (elevated processes, PID races, etc.)."""
+    try:
+        if not pid:
+            return None
+        handle = kernel32.OpenProcess(
+            _PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return None
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            size = ctypes.c_ulong(1024)
+            if not kernel32.QueryFullProcessImageNameW(
+                    handle, 0, buf, ctypes.byref(size)):
+                return None
+            return buf.value or None
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return None
+
+
 def _active_window_windows() -> dict | None:
     try:
         user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
     except Exception:
         warn_once("win", "ctypes.windll unavailable: window watcher disabled")
         return None
-    hwnd = user32.GetForegroundWindow()
-    if not hwnd:
+    try:
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        tbuf = ctypes.create_unicode_buffer(512)
+        user32.GetWindowTextW(hwnd, tbuf, 512)
+        # Friendly name from the owning process's exe. On ANY failure,
+        # fall back to the raw window class name (old behavior) — the
+        # watcher returns something or nothing, never crashes.
+        app = None
+        pid = ctypes.c_ulong()
+        if user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid)):
+            app = extract_app_name(_exe_path_of_pid(kernel32, pid.value))
+        if app is None:
+            cbuf = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(hwnd, cbuf, 256)
+            app = cbuf.value or None
+        return {"app": app, "title": tbuf.value or None}
+    except Exception as e:  # a watcher must never kill the loop
+        warn_once("win-err", f"windows window watcher error: {e}")
         return None
-    tbuf = ctypes.create_unicode_buffer(512)
-    cbuf = ctypes.create_unicode_buffer(256)
-    user32.GetWindowTextW(hwnd, tbuf, 512)
-    user32.GetClassNameW(hwnd, cbuf, 256)
-    return {"app": cbuf.value or None, "title": tbuf.value or None}
 
 
 def active_window() -> dict | None:

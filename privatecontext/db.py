@@ -87,6 +87,55 @@ def today_range() -> tuple[float, float]:
     return start.timestamp(), now.timestamp()
 
 
+def collapse_clicks(rows: list[dict]) -> list[dict]:
+    """Collapse consecutive click rows sharing app+title into one row.
+
+    Presentation only — storage is untouched. Rows are newest-first; the
+    merged row keeps the newest ts, gains ts_end (oldest ts of the run),
+    clicks (run length), x/y cleared, and the union of tags. Any non-click
+    row (window/afk/url/ocr/...) breaks a run. Single clicks pass through
+    unchanged.
+    """
+    out: list[dict] = []
+    run: list[dict] = []
+
+    def flush() -> None:
+        if not run:
+            return
+        if len(run) == 1:
+            out.append(run[0])
+        else:
+            newest, oldest = run[0], run[-1]
+            tags: list[str] = []
+            for r in run:
+                for t in (r.get("tags") or "").split(","):
+                    t = t.strip()
+                    if t and t not in tags:
+                        tags.append(t)
+            merged = dict(newest)
+            merged["ts_end"] = oldest["ts"]
+            merged["clicks"] = len(run)
+            merged["x"] = None
+            merged["y"] = None
+            merged["tags"] = ",".join(sorted(tags)) if tags else None
+            out.append(merged)
+        run.clear()
+
+    for r in rows:
+        if (r.get("type") == "click" and run
+                and run[0].get("app") == r.get("app")
+                and run[0].get("title") == r.get("title")):
+            run.append(r)
+        else:
+            flush()
+            if r.get("type") == "click":
+                run = [r]
+            else:
+                out.append(r)
+    flush()
+    return out
+
+
 def timeline(con: sqlite3.Connection, limit: int = 200) -> list[dict]:
     start, _ = today_range()
     rows = con.execute(
@@ -94,7 +143,7 @@ def timeline(con: sqlite3.Connection, limit: int = 200) -> list[dict]:
         " WHERE ts >= ? ORDER BY ts DESC LIMIT ?",
         (start, limit),
     ).fetchall()
-    return [dict(r) for r in rows]
+    return collapse_clicks([dict(r) for r in rows])
 
 
 def app_usage(con: sqlite3.Connection, cap_s: float = 600) -> list[tuple[str, float]]:
