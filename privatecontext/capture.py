@@ -99,6 +99,7 @@ _FRIENDLY_APPS = {
     "pwsh": "PowerShell",
     "explorer": "Explorer",
     "teams": "Teams",
+    "ms-teams": "Teams",
     "outlook": "Outlook",
     "onenote": "OneNote",
     "notepad": "Notepad",

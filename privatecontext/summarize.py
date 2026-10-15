@@ -15,9 +15,29 @@ import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta
 
-from .db import connect
+from .db import connect, init_db
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_HOST = "http://127.0.0.1:11434"  # 127.0.0.1, not localhost:
+# on some machines (proxies, IPv6) `localhost` hangs instead of failing
+# fast. The numeric loopback always fails fast when nothing listens.
+OLLAMA_URL = OLLAMA_HOST + "/api/generate"
+
+
+def ollama_reachable(timeout: float = 3) -> bool:
+    """Fast pre-flight: is anything listening? Never hangs the CLI."""
+    try:
+        req = urllib.request.Request(OLLAMA_HOST + "/api/tags")
+        with urllib.request.urlopen(req, timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def ollama_hint() -> str:
+    return ("can't reach ollama at http://127.0.0.1:11434 — is it installed?\n"
+            "  Install it:  https://ollama.com/download  (then restart this terminal)\n"
+            "  Then run:    ollama pull qwen2:1.5b\n"
+            "  And start:   ollama serve  (usually starts automatically)")
 DEFAULT_MODEL = "qwen2:1.5b"
 # ~4000 tokens. The digest is built to stay far under this.
 MAX_DIGEST_CHARS = 16000
@@ -193,10 +213,7 @@ def _call_ollama(model: str, prompt: str) -> str:
             print(f"ollama returned HTTP {e.code}: {detail}", file=sys.stderr)
         return ""
     except urllib.error.URLError:
-        print("can't reach ollama at http://localhost:11434 — is it running?\n"
-              "  Start it with:  ollama serve\n"
-              f"  Then make sure the model exists:  ollama pull {DEFAULT_MODEL}",
-              file=sys.stderr)
+        print(ollama_hint(), file=sys.stderr)
         return ""
     except (OSError, ValueError) as e:  # timeouts, bad JSON
         print(f"ollama request failed: {e}", file=sys.stderr)
@@ -233,6 +250,7 @@ def summarize_day(db_path: str | None, date_str: str, model: str,
         print(f"bad date '{date_str}' — use YYYY-MM-DD", file=sys.stderr)
         return 2
     con = connect(db_path)
+    init_db(con)  # no-op if capture already created the schema
     digest, stats = build_day_digest(con, date_str)
     if stats.get("n_windows", 0) == 0:
         print(f"no activity recorded for {date_str} — nothing to summarize.")
@@ -244,6 +262,9 @@ def summarize_day(db_path: str | None, date_str: str, model: str,
               f"{stats['n_clicks']} clicks — no raw click rows included]")
         return 0
     prompt = PROMPT_TEMPLATE.format(digest=digest)
+    if not ollama_reachable():
+        print(ollama_hint(), file=sys.stderr)
+        return 1
     print(f"[privatecontext] asking {model} to summarize {date_str}…",
           file=sys.stderr)
     text = _call_ollama(model, prompt)
