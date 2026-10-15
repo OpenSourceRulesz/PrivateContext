@@ -98,6 +98,11 @@ def cmd_mcp(args: argparse.Namespace) -> int:
     return mcp_main(db)
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    from .doctor import main as doctor_main
+    return doctor_main()
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="pctx",
@@ -133,6 +138,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     m = sub.add_parser("mcp", help="run the MCP server over stdio")
     m.set_defaults(func=cmd_mcp)
+
+    d = sub.add_parser("doctor", help="report what works on this machine")
+    d.set_defaults(func=cmd_doctor)
 
     r = sub.add_parser("retag", help="backfill auto-tags on untagged events")
     r.add_argument("--since", default=None,

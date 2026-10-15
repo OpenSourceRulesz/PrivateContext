@@ -17,11 +17,19 @@ lets AI assistants query the diary.
 pip install privatecontext
 ```
 
-For click + AFK tracking as well (needs a compiler-free install on
-Windows/macOS; on Linux it needs Python headers for one dependency):
+That's it — the install adapts to your OS. Click + AFK tracking
+(`pynput`) comes along automatically on Windows and macOS, where it's
+pure wheels; on Linux it's skipped (it would need C headers to build
+there). To force it everywhere:
 
 ```bash
 pip install "privatecontext[full]"
+```
+
+Then check what works on your machine:
+
+```bash
+pctx doctor
 ```
 
 Or install from source:

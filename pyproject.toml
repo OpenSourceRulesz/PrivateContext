@@ -4,16 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "privatecontext"
-version = "0.1.2"
+version = "0.1.3"
 description = "Lightweight, local-first activity tracker"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
 dependencies = [
-    # NOTE: pynput is intentionally NOT a hard dependency. On Linux it
-    # pulls in evdev, which needs C headers to build — a lightweight
-    # tracker must install with pure wheels everywhere. Click + AFK
-    # capture lives in the `full` extra instead.
+    # pynput is installed automatically on Windows/macOS (pure wheels
+    # there) and skipped on Linux, where it pulls in evdev and needs C
+    # headers to build. `pip install "privatecontext[full]"` forces it
+    # everywhere. The capture loop degrades gracefully without it.
+    'pynput; sys_platform == "win32" or sys_platform == "darwin"',
     "mss",     # screenshots (opt-in only)
     "pillow",  # JPEG screenshot encoding (opt-in screenshots)
     "mcp>=2",  # first-party MCP server (`pctx mcp`), stdio transport
@@ -22,6 +23,9 @@ dependencies = [
 [project.optional-dependencies]
 full = [
     "pynput",  # click watcher + keyboard-activity timestamps for AFK
+]
+mcp = [
+    "mcp>=2",  # first-party MCP server (`pctx mcp`), stdio transport
 ]
 
 [project.scripts]
