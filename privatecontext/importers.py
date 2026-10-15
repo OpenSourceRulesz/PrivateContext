@@ -132,19 +132,33 @@ def _report(label: str, imported: int, skipped: int,
 # browser history
 # --------------------------------------------------------------------------
 
-def _chromium_history_candidates(vendor: str) -> list[Path]:
-    """Default History paths for Chrome/Edge. First hit wins."""
+def _chromium_history_candidates(browser: str) -> list[Path]:
+    """Default History paths for Chrome/Edge. First hit wins.
+
+    NOTE: Windows vendor dirs are `Google\\Chrome` and `Microsoft\\Edge`
+    (nested, no spaces) — NOT `Google` / `Microsoft Edge`. Profile folder
+    names also vary ("Profile 2", custom names), so fall back to globbing
+    any */History under the User Data dir.
+    """
     home = Path.home()
     if sys.platform == "win32":
         local = Path(os.environ.get("LOCALAPPDATA", ""))
-        base = local / vendor / "User Data"
+        if browser == "chrome":
+            base = local / "Google" / "Chrome" / "User Data"
+        else:  # edge
+            base = local / "Microsoft" / "Edge" / "User Data"
     elif sys.platform == "darwin":
+        vendor = "Google/Chrome" if browser == "chrome" else "Microsoft Edge"
         base = home / "Library" / "Application Support" / vendor
     else:
-        slug = {"Google": "google-chrome", "Microsoft Edge": "microsoft-edge"}[vendor]
+        slug = "google-chrome" if browser == "chrome" else "microsoft-edge"
         base = home / ".config" / slug
-    return [base / "Default" / "History",
-            base / "Profile 1" / "History"]
+    cands = [base / "Default" / "History",
+             base / "Profile 1" / "History"]
+    if base.is_dir():
+        cands += [p for p in sorted(base.glob("*/History"))
+                  if p.is_file() and p not in cands]
+    return cands
 
 
 def _firefox_places_candidates() -> list[Path]:
@@ -167,15 +181,15 @@ def _browser_source(browser: str, profile: str | None) -> tuple[Path, list[str]]
     searched: list[str] = []
     if profile:
         p = Path(profile)
-        cands = [p, p / "History", p / "places.sqlite"]
+        cands = [p, p / "History", p / "places.sqlite",
+                 p / "Default" / "History"]
         for c in cands:
             searched.append(str(c))
             if c.is_file():
                 return c, searched
         return None, searched
     if browser in ("chrome", "edge"):
-        vendor = "Google" if browser == "chrome" else "Microsoft Edge"
-        cands = _chromium_history_candidates(vendor)
+        cands = _chromium_history_candidates(browser)
     else:
         cands = [d / "places.sqlite" for d in _firefox_places_candidates()]
     for c in cands:
