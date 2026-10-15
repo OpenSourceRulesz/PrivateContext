@@ -14,6 +14,9 @@ from pathlib import Path
 TASK_NAME = "PrivateContext"
 SERVICE_NAME = "privatecontext-capture.service"
 PLIST_LABEL = "com.privatecontext.capture"
+# Per-user autostart registry key — writable without admin rights, unlike
+# Task Scheduler on locked-down machines. No console window (pythonw).
+WIN_RUN_KEY = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 
 
 def _pctx_path() -> str | None:
@@ -131,7 +134,25 @@ def _install_windows() -> tuple[bool, str]:
     if code == 0:
         return True, ("autostart installed: PrivateContext runs at logon "
                       "(Task Scheduler, no console window).")
-    return False, f"schtasks failed: {out[:300] or 'unknown error'}"
+    # Task Scheduler is restricted on some machines (e.g. managed /
+    # university PCs report "Access is denied"). The per-user Run
+    # registry key needs no admin rights — fall back to it.
+    ok, msg = _install_windows_registry(pythonw)
+    if ok:
+        return True, msg
+    return False, (f"schtasks failed: {out[:300] or 'unknown error'}; "
+                   f"registry fallback also failed: {msg}")
+
+
+def _install_windows_registry(pythonw: str) -> tuple[bool, str]:
+    code, out = _run(["reg", "add", WIN_RUN_KEY, "/v", TASK_NAME,
+                      "/t", "REG_SZ", "/d", windows_task_command(pythonw),
+                      "/f"])
+    if code == 0:
+        return True, ("autostart installed: PrivateContext runs at logon "
+                      "(registry Run key — Task Scheduler is restricted "
+                      "on this machine, no admin needed this way).")
+    return False, f"registry fallback failed: {out[:300] or 'unknown error'}"
 
 
 def _install_linux() -> tuple[bool, str]:
@@ -180,13 +201,16 @@ def uninstall() -> tuple[bool, str]:
 
 
 def _uninstall_windows() -> tuple[bool, str]:
-    code, out = _run(["schtasks", "/delete", "/tn", TASK_NAME, "/f"])
-    low = out.lower()
+    removed: list[str] = []
+    code, _ = _run(["schtasks", "/delete", "/tn", TASK_NAME, "/f"])
     if code == 0:
-        return True, "autostart removed (scheduled task deleted)."
-    if "cannot find" in low or "does not exist" in low:
-        return True, "autostart was not installed."
-    return False, f"schtasks delete failed: {out[:300] or 'unknown error'}"
+        removed.append("scheduled task")
+    code, _ = _run(["reg", "delete", WIN_RUN_KEY, "/v", TASK_NAME, "/f"])
+    if code == 0:
+        removed.append("registry Run entry")
+    if removed:
+        return True, f"autostart removed ({', '.join(removed)})."
+    return True, "autostart was not installed."
 
 
 def _uninstall_linux() -> tuple[bool, str]:
@@ -222,9 +246,16 @@ def status() -> tuple[bool, str]:
     try:
         sysname = platform.system()
         if sysname == "Windows":
+            bits: list[str] = []
             code, _ = _run(["schtasks", "/query", "/tn", TASK_NAME])
-            return (True, "autostart is installed (Task Scheduler).") if code == 0 \
-                else (False, "autostart is not installed.")
+            if code == 0:
+                bits.append("Task Scheduler")
+            code, _ = _run(["reg", "query", WIN_RUN_KEY, "/v", TASK_NAME])
+            if code == 0:
+                bits.append("registry Run key")
+            if bits:
+                return True, f"autostart is installed ({', '.join(bits)})."
+            return False, "autostart is not installed."
         if sysname == "Darwin":
             p = launchd_plist_path()
             return (True, f"autostart is installed ({p}).") if p.exists() \

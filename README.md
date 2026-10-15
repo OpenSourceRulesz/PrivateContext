@@ -86,7 +86,10 @@ pctx autostart uninstall  # remove it again
 ```
 
 Windows uses Task Scheduler (no console window), Linux a systemd user
-service (XDG autostart entry as fallback), macOS a LaunchAgent.
+service (XDG autostart entry as fallback), macOS a LaunchAgent. If Task
+Scheduler is restricted on your machine ("Access is denied", common on
+managed PCs), Windows automatically falls back to the per-user registry
+Run key instead — still no admin needed.
 
 ## Today by tag
 
