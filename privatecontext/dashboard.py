@@ -7,6 +7,7 @@ every 2 seconds — live updates without WebSockets. Views: today's timeline
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -158,7 +159,21 @@ class Handler(BaseHTTPRequestHandler):
 def serve(db_path: str | None = None, port: int = 18790) -> None:
     db = connect(db_path)
     init_db(db)
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    # On some Windows machines the default port is blocked (WinError 10013)
+    # or already in use — walk forward instead of dying with a traceback.
+    server = None
+    for try_port in range(port, port + 10):
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", try_port), Handler)
+            port = try_port
+            break
+        except OSError:
+            continue
+    if server is None:
+        print(f"[privatecontext] could not bind ports {port}–{port + 9} on "
+              f"127.0.0.1. Try: pctx dashboard --port 8888",
+              file=sys.stderr)
+        raise SystemExit(1)
     server.db = db  # type: ignore[attr-defined]
     server.lock = threading.Lock()  # type: ignore[attr-defined]
     print(f"[privatecontext] dashboard at http://127.0.0.1:{port} — Ctrl-C to stop")
