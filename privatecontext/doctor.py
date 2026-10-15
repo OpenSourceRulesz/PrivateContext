@@ -97,15 +97,18 @@ def run_checks() -> list[dict]:
 
     # -- Ollama (nightly summaries) --
     try:
-        req = urllib.request.Request("http://127.0.0.1:11434/api/tags")
+        from .summarize import _ollama_base
+        obase = _ollama_base()
+        req = urllib.request.Request(obase + "/api/tags")
         with urllib.request.urlopen(req, timeout=3) as r:
             models = r.read(2000).decode("utf-8", "replace")
         out.append(_check("Ollama", OK,
-                          f"reachable at :11434 ({models[:60]}…)"))
+                          f"reachable at {obase} ({models[:60]}…)"))
     except Exception:
         out.append(_check("Ollama", WARN,
-                          "not reachable at :11434 — pctx summarize needs "
-                          "`ollama serve` + `ollama pull qwen2:1.5b`"))
+                          "not reachable — pctx summarize needs "
+                          "`ollama serve` + `ollama pull qwen2:1.5b` "
+                          "(or set OLLAMA_HOST=host:port)"))
 
     # -- database --
     try:

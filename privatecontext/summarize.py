@@ -9,6 +9,7 @@ Only stdlib is used for the Ollama HTTP call.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import urllib.error
@@ -17,9 +18,19 @@ from datetime import date, datetime, timedelta
 
 from .db import connect, init_db
 
-OLLAMA_HOST = "http://127.0.0.1:11434"  # 127.0.0.1, not localhost:
-# on some machines (proxies, IPv6) `localhost` hangs instead of failing
-# fast. The numeric loopback always fails fast when nothing listens.
+def _ollama_base() -> str:
+    """Ollama server base URL. Honors OLLAMA_HOST (Ollama's own convention,
+    e.g. 127.0.0.1:11435), defaulting to 127.0.0.1:11434. 127.0.0.1, not
+    localhost: on some machines (proxies, IPv6) `localhost` hangs instead
+    of failing fast. The numeric loopback always fails fast when nothing
+    listens."""
+    host = os.environ.get("OLLAMA_HOST", "127.0.0.1:11434").strip()
+    if "://" not in host:
+        host = "http://" + host
+    return host.rstrip("/")
+
+
+OLLAMA_HOST = _ollama_base()
 OLLAMA_URL = OLLAMA_HOST + "/api/generate"
 
 
@@ -34,10 +45,11 @@ def ollama_reachable(timeout: float = 3) -> bool:
 
 
 def ollama_hint() -> str:
-    return ("can't reach ollama at http://127.0.0.1:11434 — is it installed?\n"
+    return (f"can't reach ollama at {OLLAMA_HOST} — is it installed?\n"
             "  Install it:  https://ollama.com/download  (then restart this terminal)\n"
             "  Then run:    ollama pull qwen2:1.5b\n"
-            "  And start:   ollama serve  (usually starts automatically)")
+            "  And start:   ollama serve  (usually starts automatically)\n"
+            "  (set OLLAMA_HOST=host:port if your server runs elsewhere)")
 DEFAULT_MODEL = "qwen2:1.5b"
 # ~4000 tokens. The digest is built to stay far under this.
 MAX_DIGEST_CHARS = 16000
