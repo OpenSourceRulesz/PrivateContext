@@ -65,6 +65,10 @@ pctx dashboard
 # -> http://127.0.0.1:18790  (auto-refreshes every 2s)
 ```
 
+The dashboard isn't today-locked: the date picker (arrows + calendar)
+flips every section — timeline, app usage, by-tag, recap — to any past
+day. Auto-refresh only runs while you're viewing today.
+
 Export a shareable copy (screenshots excluded):
 
 ```bash
@@ -210,6 +214,7 @@ ollama pull qwen2:1.5b        # small default model; any Ollama model works
 pctx summarize --dry-run      # preview the digest without calling a model
 pctx summarize                # summarize today
 pctx summarize --date 2026-10-12 --model qwen2:7b
+pctx summarize --week         # trailing 7 days, one call, stored as week:YYYY-MM-DD
 ```
 
 Run it nightly with cron:
@@ -220,6 +225,27 @@ Run it nightly with cron:
 
 If Ollama isn't reachable, `pctx summarize` prints a plain-English hint
 (`ollama serve` / `ollama pull …`) and exits non-zero — no tracebacks.
+
+## Troubleshooting
+
+Real lessons from field testing, mostly on managed Windows PCs:
+
+- **`schtasks` says "Access is denied"** when installing autostart: your
+  machine restricts Task Scheduler. `pctx autostart install` automatically
+  falls back to the per-user registry Run key instead — no admin needed,
+  no action required from you.
+- **Something squats port 11434** (seen in the wild: VS Code itself):
+  run Ollama on another port — `OLLAMA_HOST=127.0.0.1:11435 ollama serve`
+  — and make it permanent with `[Environment]::SetEnvironmentVariable(
+  "OLLAMA_HOST", "127.0.0.1:11435", "User")` so both `ollama` and `pctx`
+  see it.
+- **`ollama pull` hangs with zero output**: check for proxy weirdness,
+  then run `ollama serve` with `OLLAMA_DEBUG=1` in a visible terminal —
+  the daemon logs will say what it's stuck on.
+- **PowerShell notes**: open a *fresh* terminal after installing anything
+  (terminals only read PATH when they open); `%VAR%` is cmd syntax — in
+  PowerShell it's `$env:VAR`; quote multi-word arguments
+  (`pctx denylist add "SQL Developer"`).
 
 ## MCP server (for AI assistants)
 
@@ -289,7 +315,10 @@ Then ask things like *"what was I doing Tuesday afternoon?"* or
   then only the active monitor is captured, only on app-switch/URL-change,
   downscaled to 640 px wide, stored as JPEG (quality 70).
 - **One-click purge.** The dashboard has a big red button that deletes
-  everything. `pctx export --scrubbed` excludes screenshots and shot events.
+  everything. The CLI is more surgical: `pctx purge --before 90d` drops
+  old events *and* old day summaries, `pctx purge --app <name>` drops one
+  app's events. Both print what they'd delete first — nothing happens
+  without `--yes`. `pctx export --scrubbed` excludes screenshots and shot events.
 
 ## v0 limits (honest edition)
 

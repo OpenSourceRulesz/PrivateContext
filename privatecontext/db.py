@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from .tagging import extract_tags
@@ -90,6 +91,14 @@ def today_range() -> tuple[float, float]:
     return start.timestamp(), now.timestamp()
 
 
+def day_range(date_str: str) -> tuple[float, float]:
+    """Unix range for a local calendar day (YYYY-MM-DD). Raises ValueError
+    on bad format."""
+    d = date.fromisoformat(date_str)
+    start = datetime(d.year, d.month, d.day).astimezone()
+    return start.timestamp(), (start + timedelta(days=1)).timestamp()
+
+
 def collapse_clicks(rows: list[dict]) -> list[dict]:
     """Collapse consecutive click rows sharing app+title into one row.
 
@@ -139,28 +148,37 @@ def collapse_clicks(rows: list[dict]) -> list[dict]:
     return out
 
 
-def timeline(con: sqlite3.Connection, limit: int = 200) -> list[dict]:
-    start, _ = today_range()
+def timeline(con: sqlite3.Connection, limit: int = 200,
+             date_str: str | None = None) -> list[dict]:
+    """Newest-first events for one day (default: today)."""
+    start, end = day_range(date_str) if date_str else today_range()
     rows = con.execute(
         "SELECT id, ts, type, app, title, url, x, y, duration_ms, tags FROM events"
-        " WHERE ts >= ? ORDER BY ts DESC LIMIT ?",
-        (start, limit),
+        " WHERE ts >= ? AND ts < ? ORDER BY ts DESC LIMIT ?",
+        (start, end, limit),
     ).fetchall()
     return collapse_clicks([dict(r) for r in rows])
 
 
-def app_usage(con: sqlite3.Connection, cap_s: float = 600) -> list[tuple[str, float]]:
-    """Seconds per app today. Each window event owns time until the next
-    event, capped so a forgotten window doesn't claim the whole afternoon."""
-    start, _ = today_range()
+def app_usage(con: sqlite3.Connection, cap_s: float = 600,
+              date_str: str | None = None) -> list[tuple[str, float]]:
+    """Seconds per app for one day (default: today). Each window event owns
+    time until the next event, capped so a forgotten window doesn't claim
+    the whole afternoon. For past days the last event owns time until
+    midnight, not until now."""
+    if date_str:
+        start, end = day_range(date_str)
+    else:
+        start, _ = today_range()
+        end = time.time()
     rows = con.execute(
-        "SELECT ts, app FROM events WHERE type = 'window' AND ts >= ? ORDER BY ts",
-        (start,),
+        "SELECT ts, app FROM events WHERE type = 'window'"
+        " AND ts >= ? AND ts < ? ORDER BY ts",
+        (start, end),
     ).fetchall()
     usage: dict[str, float] = {}
-    now = time.time()
     for i, r in enumerate(rows):
-        nxt = rows[i + 1]["ts"] if i + 1 < len(rows) else now
+        nxt = rows[i + 1]["ts"] if i + 1 < len(rows) else end
         dur = min(max(0.0, nxt - r["ts"]), cap_s)
         app = r["app"] or "unknown"
         usage[app] = usage.get(app, 0.0) + dur
@@ -240,19 +258,25 @@ def denylist_match(patterns: list[str], app: str | None,
 # usage aggregation
 # ---------------------------------------------------------------------------
 
-def tag_usage(con: sqlite3.Connection, cap_s: float = 600) -> list[tuple[str, float]]:
-    """Seconds per tag today. Each window event owns the time until the next
-    window event (capped, exactly like app_usage); that time is credited to
-    every tag on the event, so multi-tagged events count toward each tag."""
-    start, _ = today_range()
+def tag_usage(con: sqlite3.Connection, cap_s: float = 600,
+              date_str: str | None = None) -> list[tuple[str, float]]:
+    """Seconds per tag for one day (default: today). Each window event owns
+    the time until the next window event (capped, exactly like app_usage);
+    that time is credited to every tag on the event, so multi-tagged events
+    count toward each tag."""
+    if date_str:
+        start, end = day_range(date_str)
+    else:
+        start, _ = today_range()
+        end = time.time()
     rows = con.execute(
-        "SELECT ts, tags FROM events WHERE type = 'window' AND ts >= ? ORDER BY ts",
-        (start,),
+        "SELECT ts, tags FROM events WHERE type = 'window'"
+        " AND ts >= ? AND ts < ? ORDER BY ts",
+        (start, end),
     ).fetchall()
     usage: dict[str, float] = {}
-    now = time.time()
     for i, r in enumerate(rows):
-        nxt = rows[i + 1]["ts"] if i + 1 < len(rows) else now
+        nxt = rows[i + 1]["ts"] if i + 1 < len(rows) else end
         dur = min(max(0.0, nxt - r["ts"]), cap_s)
         for t in (r["tags"] or "").split(","):
             t = t.strip()
@@ -261,9 +285,18 @@ def tag_usage(con: sqlite3.Connection, cap_s: float = 600) -> list[tuple[str, fl
     return sorted(usage.items(), key=lambda kv: -kv[1])
 
 
-def day_recap(con: sqlite3.Connection) -> dict:
-    """Today's summary from the days table, else yesterday's (labeled).
-    Empty dict when no summary exists — callers must not nag."""
+def day_recap(con: sqlite3.Connection,
+              date_str: str | None = None) -> dict:
+    """Summary for one day. With date_str: exactly that date, no fallback.
+    Without (dashboard home view): today's summary, else yesterday's
+    (labeled). Empty dict when no summary exists — callers must not nag."""
+    if date_str:
+        row = con.execute("SELECT summary FROM days WHERE date = ?",
+                          (date_str,)).fetchone()
+        if row and row["summary"]:
+            return {"label": "Recap", "date": date_str,
+                    "summary": row["summary"]}
+        return {}
     today = datetime.now().astimezone().date().isoformat()
     row = con.execute("SELECT summary FROM days WHERE date = ?",
                       (today,)).fetchone()
@@ -278,3 +311,75 @@ def day_recap(con: sqlite3.Connection) -> dict:
         return {"label": "Yesterday's recap", "date": yest,
                 "summary": row["summary"]}
     return {}
+
+
+# ---------------------------------------------------------------------------
+# purge
+# ---------------------------------------------------------------------------
+
+def parse_purge_before(s: str) -> str:
+    """'90d' -> YYYY-MM-DD 90 days ago; 'YYYY-MM-DD' validated as-is.
+    Strict: rejects '90x', 'd', and malformed dates. Raises ValueError."""
+    s = (s or "").strip()
+    m = re.fullmatch(r"(\d+)d", s)
+    if m:
+        d = datetime.now().astimezone().date() - timedelta(days=int(m.group(1)))
+        return d.isoformat()
+    return date.fromisoformat(s).isoformat()  # raises ValueError
+
+
+def _purge_cutoff_ts(date_str: str) -> float:
+    """Start of the cutoff day, local time. Events at/after this are kept."""
+    d = date.fromisoformat(date_str)
+    return datetime(d.year, d.month, d.day).astimezone().timestamp()
+
+
+def purge_counts(con: sqlite3.Connection, before: str | None = None,
+                 app: str | None = None) -> dict:
+    """Dry-run counts for a purge: {'events': n, 'days': m}."""
+    conds: list[str] = []
+    params: list = []
+    if before:
+        conds.append("ts < ?")
+        params.append(_purge_cutoff_ts(before))
+    if app:
+        conds.append("LOWER(app) LIKE '%' || LOWER(?) || '%'")
+        params.append(app)
+    where = " AND ".join(conds)
+    n_events = con.execute(
+        f"SELECT COUNT(*) FROM events WHERE {where}", params).fetchone()[0]
+    n_days = 0
+    if before:
+        # Daily keys compare directly; week: keys compare on the Monday date.
+        # ISO dates sort lexicographically, so string comparison is exact.
+        n_days = con.execute(
+            "SELECT COUNT(*) FROM days WHERE"
+            " (date NOT LIKE 'week:%' AND date < ?)"
+            " OR (date LIKE 'week:%' AND substr(date, 6) < ?)",
+            (before, before)).fetchone()[0]
+    return {"events": n_events, "days": n_days}
+
+
+def purge_data(con: sqlite3.Connection, before: str | None = None,
+               app: str | None = None) -> dict:
+    """Delete matching events (and old day summaries when --before is set).
+    Returns the same counts purge_counts reported. Commits + VACUUMs."""
+    result = purge_counts(con, before, app)
+    conds: list[str] = []
+    params: list = []
+    if before:
+        conds.append("ts < ?")
+        params.append(_purge_cutoff_ts(before))
+    if app:
+        conds.append("LOWER(app) LIKE '%' || LOWER(?) || '%'")
+        params.append(app)
+    con.execute(f"DELETE FROM events WHERE {' AND '.join(conds)}", params)
+    if before:
+        con.execute(
+            "DELETE FROM days WHERE"
+            " (date NOT LIKE 'week:%' AND date < ?)"
+            " OR (date LIKE 'week:%' AND substr(date, 6) < ?)",
+            (before, before))
+    con.commit()
+    con.execute("VACUUM")
+    return result

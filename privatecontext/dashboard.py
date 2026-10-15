@@ -1,14 +1,18 @@
 """Local dashboard for PrivateContext (stdlib http.server only).
 
 Single page on 127.0.0.1:18790. The page polls /api/timeline and /api/usage
-every 2 seconds — live updates without WebSockets. Views: today's timeline
-(reverse-chron), app-usage bars, FTS5 search, and a big Purge button.
+every 2 seconds — live updates without WebSockets. Views: timeline
+(reverse-chron), app-usage bars, by-tag bars, FTS5 search, recap card, and a
+big Purge button. Every section is date-addressable via ?date=YYYY-MM-DD;
+the UI has a date picker with prev/next-day arrows (auto-refresh only runs
+while viewing today).
 """
 from __future__ import annotations
 
 import json
 import sys
 import threading
+from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -37,6 +41,9 @@ button:hover{background:#333}
 .bar .fill{background:#4a9;height:14px;border-radius:4px}
 .bar .v{width:60px;color:#888;font-size:0.9em}
 a{color:#9cf}
+#datenav{display:flex;gap:8px;align-items:center;margin:4px 0 12px 0}
+#datenav input[type=date]{background:#222;color:#eee;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:1em;color-scheme:dark}
+#datenav button:disabled{opacity:0.35;cursor:default}
 #purge{background:#5a1d1d;border-color:#a33;margin-top:24px;font-size:1.1em;padding:12px 22px}
 #purge:hover{background:#7a2626}
 .card{background:#1d2a1d;border:1px solid #3a5a3a;border-radius:8px;padding:14px 18px;margin:14px 0}
@@ -46,6 +53,11 @@ a{color:#9cf}
 </style></head>
 <body>
 <h1>&#9673; PrivateContext <small>v0 &middot; local only</small></h1>
+<div id="datenav">
+<button id="prevD" onclick="stepDate(-1)" title="previous day">&larr;</button>
+<input type="date" id="datepick" onchange="pickDate(this.value)">
+<button id="nextD" onclick="stepDate(1)" title="next day">&rarr;</button>
+</div>
 <p id="status">loading&hellip;</p>
 <div id="recap"></div>
 <div>
@@ -53,15 +65,22 @@ a{color:#9cf}
 <button onclick="doSearch()">Search</button>
 </div>
 <div id="results"></div>
-<h2>Today &mdash; app usage</h2>
+<h2 id="usageH">Today &mdash; app usage</h2>
 <div id="usage"></div>
-<div id="tagsec"><h2>Today &mdash; by tag</h2><div id="tagusage"></div></div>
-<h2>Timeline (newest first)</h2>
+<div id="tagsec"><h2 id="tagH">Today &mdash; by tag</h2><div id="tagusage"></div></div>
+<h2 id="tlH">Timeline (newest first)</h2>
 <div id="timeline"></div>
 <hr>
 <button id="purge" onclick="doPurge()">&#128465; Purge all data</button>
 <script>
-async function j(p, opt){ const r = await fetch(p, opt); return r.json(); }
+async function j(p, opt){
+  const r = await fetch(p, opt);
+  if(!r.ok){ const e = await r.json().catch(()=>({})); throw new Error(e.error || r.status); }
+  return r.json();
+}
+function todayISO(){ return new Date().toLocaleDateString('en-CA'); }
+let curDate = todayISO();
+let timer = null;
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function fmtT(ts){ return new Date(ts*1000).toLocaleTimeString(); }
@@ -85,28 +104,52 @@ function bars(pairs){
 }
 async function loadRecap(){
   try{
-    const r = await j('/api/recap');
+    // Viewing today: server falls back to yesterday's recap. A picked
+    // past date shows exactly that date's summary, no fallback.
+    const url = (curDate === todayISO()) ? '/api/recap' : '/api/recap?date='+curDate;
+    const r = await j(url);
+    const el = document.getElementById('recap');
     if(r && r.summary){
-      document.getElementById('recap').innerHTML =
+      el.innerHTML =
         '<div class="card"><h3>'+esc(r.label)+' <small>'+esc(r.date)+'</small></h3>'+
         '<p>'+esc(r.summary)+'</p></div>';
-    }
+    } else { el.innerHTML=''; }
   }catch(e){ /* no summary yet — no card, no nagging */ }
 }
+function dayLabel(){ return curDate === todayISO() ? 'Today' : curDate; }
 async function refresh(){
   try{
-    const tl = await j('/api/timeline?limit=200');
-    const u = await j('/api/usage');
-    const t = await j('/api/tagusage');
+    const tl = await j('/api/timeline?limit=200&date='+curDate);
+    const u = await j('/api/usage?date='+curDate);
+    const t = await j('/api/tagusage?date='+curDate);
     document.getElementById('timeline').innerHTML = tl.map(evHTML).join('');
     document.getElementById('usage').innerHTML = bars(u);
     const tagsec = document.getElementById('tagsec');
     if(t.length){ tagsec.style.display=''; document.getElementById('tagusage').innerHTML = bars(t.slice(0,10)); }
     else { tagsec.style.display='none'; }
+    document.getElementById('usageH').textContent = dayLabel()+' — app usage';
+    document.getElementById('tagH').textContent = dayLabel()+' — by tag';
+    const live = curDate === todayISO() ? ' (auto-refreshes every 2s)' : '';
     document.getElementById('status').textContent =
-      tl.length+' events today · updated '+new Date().toLocaleTimeString()+' (auto-refreshes every 2s)';
+      tl.length+' events on '+curDate+' · updated '+new Date().toLocaleTimeString()+live;
   }catch(e){ document.getElementById('status').textContent = 'error: '+e; }
 }
+function setDate(d){
+  if(d > todayISO()) d = todayISO();  // no peeking into the future
+  curDate = d;
+  document.getElementById('datepick').value = d;
+  document.getElementById('nextD').disabled = (d >= todayISO());
+  if(timer){ clearInterval(timer); timer = null; }
+  if(d === todayISO()){ timer = setInterval(refresh, 2000); }
+  loadRecap();
+  refresh();
+}
+function stepDate(n){
+  const d = new Date(curDate+'T12:00:00');
+  d.setDate(d.getDate()+n);
+  setDate(d.toLocaleDateString('en-CA'));
+}
+function pickDate(v){ if(v) setDate(v); }
 async function doSearch(){
   const q = document.getElementById('q').value;
   const r = await j('/api/search?q='+encodeURIComponent(q));
@@ -121,12 +164,19 @@ async function doPurge(){
   refresh();
 }
 document.getElementById('q').addEventListener('keydown', e=>{ if(e.key==='Enter') doSearch(); });
-setInterval(refresh, 2000);
-loadRecap();
-refresh();
+setDate(todayISO());
 </script>
 </body></html>
 """
+
+
+def _date_param(qs: dict) -> str | None:
+    """Validated ?date=YYYY-MM-DD, or None when absent. Raises ValueError
+    on bad format (caller turns it into HTTP 400)."""
+    vals = qs.get("date", [])
+    if not vals:
+        return None
+    return date.fromisoformat(vals[0]).isoformat()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -153,16 +203,26 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-        elif u.path == "/api/timeline":
+        elif u.path in ("/api/timeline", "/api/usage",
+                          "/api/tagusage", "/api/recap"):
             qs = parse_qs(u.query)
-            limit = int(qs.get("limit", ["200"])[0])
-            self._json(self._with_db(lambda db: timeline(db, min(limit, 1000))))
-        elif u.path == "/api/usage":
-            self._json(self._with_db(app_usage))
-        elif u.path == "/api/tagusage":
-            self._json(self._with_db(tag_usage))
-        elif u.path == "/api/recap":
-            self._json(self._with_db(day_recap))
+            try:
+                d = _date_param(qs)
+            except ValueError:
+                self._json({"error": "bad date — use YYYY-MM-DD"}, 400)
+                return
+            if u.path == "/api/timeline":
+                limit = int(qs.get("limit", ["200"])[0])
+                self._json(self._with_db(
+                    lambda db: timeline(db, min(limit, 1000), d)))
+            elif u.path == "/api/usage":
+                self._json(self._with_db(
+                    lambda db: app_usage(db, date_str=d)))
+            elif u.path == "/api/tagusage":
+                self._json(self._with_db(
+                    lambda db: tag_usage(db, date_str=d)))
+            else:
+                self._json(self._with_db(lambda db: day_recap(db, d)))
         elif u.path == "/api/search":
             q = parse_qs(u.query).get("q", [""])[0]
             self._json(self._with_db(lambda db: search(db, q)))

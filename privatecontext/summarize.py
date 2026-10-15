@@ -16,7 +16,7 @@ import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta
 
-from .db import connect, init_db
+from .db import connect, day_range, init_db
 
 def _ollama_base() -> str:
     """Ollama server base URL. Honors OLLAMA_HOST (Ollama's own convention,
@@ -56,13 +56,6 @@ MAX_DIGEST_CHARS = 16000
 CAP_S = 600  # max seconds one window event can claim (same rule as dashboard)
 
 TICKET_RE = re.compile(r"\b(?:[A-Z]{2,}\d{3,}|[A-Z]+-\d+|#\d+)\b")
-
-
-def day_range(date_str: str) -> tuple[float, float]:
-    """Unix range for a local calendar day (YYYY-MM-DD)."""
-    d = date.fromisoformat(date_str)
-    start = datetime(d.year, d.month, d.day).astimezone()
-    return start.timestamp(), (start + timedelta(days=1)).timestamp()
 
 
 def _fmt_hm(ts: float) -> str:
@@ -202,6 +195,63 @@ Digest:
 """
 
 
+WEEK_PROMPT_TEMPLATE = """You are a private, on-device assistant. Summarize one week of computer activity from the CONDENSED per-day digests below (each headed === YYYY-MM-DD ===). The digests hold aggregates only — no raw events. Do not invent anything not in the digests.
+
+Write exactly two sections:
+
+RECAP:
+- 5 to 10 short bullets describing what the person worked on across the week, naming apps, projects, and rough times. Call out trends, unusually heavy or light days, and recurring themes.
+
+TAGS:
+a single comma-separated line of tags: project or repo names, app names, ticket-like tokens (e.g. INC0123456), topics.
+
+Digests:
+---
+{digest}
+---
+"""
+
+# 3x the daily budget: 7 day-digests must fit, each already condensed.
+WEEK_DIGEST_CHARS = 3 * MAX_DIGEST_CHARS
+
+
+def week_monday(date_str: str) -> str:
+    """Monday (YYYY-MM-DD) of the week containing date_str. Used as the
+    storage label for weekly summaries."""
+    d = date.fromisoformat(date_str)
+    return (d - timedelta(days=d.weekday())).isoformat()
+
+
+def week_key(date_str: str) -> str:
+    """Storage key in the days table: 'week:YYYY-MM-DD' (Monday's date).
+    TEXT column — never collides with daily YYYY-MM-DD keys."""
+    return "week:" + week_monday(date_str)
+
+
+def build_week_digest(con, end_date_str: str) -> tuple[str, dict]:
+    """Condense the trailing 7 days ending at end_date_str (inclusive).
+
+    Returns (digest_text, stats). Each day gets its existing day digest
+    under an === YYYY-MM-DD === header; quiet days get a one-liner.
+    """
+    end = date.fromisoformat(end_date_str)
+    days = [(end - timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
+    parts: list[str] = []
+    stats: dict = {"days": days, "n_days_active": 0, "n_windows": 0}
+    for day in days:
+        digest, dstats = build_day_digest(con, day)
+        stats["n_windows"] += dstats.get("n_windows", 0)
+        if dstats.get("n_windows", 0) == 0:
+            parts.append(f"=== {day} ===\nno activity recorded.")
+        else:
+            stats["n_days_active"] += 1
+            parts.append(f"=== {day} ===\n{digest}")
+    digest = "\n\n".join(parts)
+    if len(digest) > WEEK_DIGEST_CHARS:
+        digest = digest[:WEEK_DIGEST_CHARS] + "\n…[truncated]"
+    return digest, stats
+
+
 def _call_ollama(model: str, prompt: str) -> str:
     payload = json.dumps({
         "model": model,
@@ -233,7 +283,7 @@ def _call_ollama(model: str, prompt: str) -> str:
     return body.get("response", "")
 
 
-def _parse_summary(text: str) -> tuple[str, str]:
+def _parse_summary(text: str, max_bullets: int = 8) -> tuple[str, str]:
     """Split model output into (recap, tags). Tolerant of formatting wobble."""
     recap_m = re.search(r"RECAP:\s*(.*?)(?:\nTAGS:|\Z)", text, re.S | re.I)
     tags_m = re.search(r"TAGS:\s*(.*)", text, re.S | re.I)
@@ -244,7 +294,7 @@ def _parse_summary(text: str) -> tuple[str, str]:
             line = line.strip().lstrip("-•* ").strip()
             if line:
                 bullets.append("- " + line)
-        recap = "\n".join(bullets[:8])
+        recap = "\n".join(bullets[:max_bullets])
     tags = ""
     if tags_m:
         raw = tags_m.group(1).strip().splitlines()[0]
@@ -287,6 +337,51 @@ def summarize_day(db_path: str | None, date_str: str, model: str,
                 (date_str, recap, tags))
     con.commit()
     print(f"[privatecontext] summary stored for {date_str}")
+    print(recap)
+    if tags:
+        print(f"\ntags: {tags}")
+    return 0
+
+
+def summarize_week(db_path: str | None, end_date_str: str, model: str,
+                   dry_run: bool = False) -> int:
+    """Summarize the trailing 7 days ending at end_date_str (inclusive).
+
+    One Ollama call over the joined per-day digests; stored in the days
+    table under 'week:YYYY-MM-DD' (Monday's date)."""
+    try:
+        day_range(end_date_str)  # validates YYYY-MM-DD
+    except ValueError:
+        print(f"bad date '{end_date_str}' — use YYYY-MM-DD", file=sys.stderr)
+        return 2
+    con = connect(db_path)
+    init_db(con)  # no-op if capture already created the schema
+    digest, stats = build_week_digest(con, end_date_str)
+    if stats["n_days_active"] == 0:
+        print(f"no activity recorded in the 7 days ending {end_date_str}"
+              f" — nothing to summarize.")
+        return 0
+    key = week_key(end_date_str)
+    if dry_run:
+        print(digest)
+        print(f"\n[week digest: {len(digest)} chars "
+              f"(budget {WEEK_DIGEST_CHARS}); {stats['n_days_active']}/7 days "
+              f"active, {stats['n_windows']} windows — no raw click rows included]")
+        return 0
+    prompt = WEEK_PROMPT_TEMPLATE.format(digest=digest)
+    if not ollama_reachable():
+        print(ollama_hint(), file=sys.stderr)
+        return 1
+    print(f"[privatecontext] asking {model} to summarize week of {key}…",
+          file=sys.stderr)
+    text = _call_ollama(model, prompt)
+    if not text:
+        return 1
+    recap, tags = _parse_summary(text, max_bullets=10)
+    con.execute("INSERT OR REPLACE INTO days(date, summary, tags) VALUES (?,?,?)",
+                (key, recap, tags))
+    con.commit()
+    print(f"[privatecontext] weekly summary stored under {key}")
     print(recap)
     if tags:
         print(f"\ntags: {tags}")

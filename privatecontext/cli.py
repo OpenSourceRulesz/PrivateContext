@@ -15,10 +15,10 @@ from .autostart import uninstall as autostart_uninstall
 from .capture import run_capture, simulate
 from .dashboard import serve
 from .db import (connect, counts, default_db_path, get_denylist, init_db,
-                 set_denylist)
+                 parse_purge_before, purge_counts, purge_data, set_denylist)
 from .importers import (RefusedError, import_activitywatch, import_browser,
                         import_csv, import_json, import_screenpipe)
-from .summarize import DEFAULT_MODEL, summarize_day
+from .summarize import DEFAULT_MODEL, summarize_day, summarize_week
 from .tagging import extract_tags
 
 
@@ -86,8 +86,47 @@ def cmd_export(args: argparse.Namespace) -> int:
 def cmd_summarize(args: argparse.Namespace) -> int:
     from datetime import date as _date
     db = _resolve_db(args.db) if args.db else None
-    return summarize_day(db, args.date or _date.today().isoformat(),
+    date_str = args.date or _date.today().isoformat()
+    if args.week:
+        return summarize_week(db, date_str,
+                               model=args.model, dry_run=args.dry_run)
+    return summarize_day(db, date_str,
                          model=args.model, dry_run=args.dry_run)
+
+
+def cmd_purge(args: argparse.Namespace) -> int:
+    if not args.before and not args.app:
+        print("purge needs --before and/or --app:\n"
+              "  pctx purge --before 90d [--yes]\n"
+              "  pctx purge --app <name> [--yes]",
+              file=sys.stderr)
+        return 2
+    before = None
+    if args.before:
+        try:
+            before = parse_purge_before(args.before)
+        except ValueError:
+            print(f"bad --before '{args.before}' — use Nd (e.g. 90d)"
+                  f" or YYYY-MM-DD", file=sys.stderr)
+            return 2
+    db = _resolve_db(args.db) if args.db else default_db_path()
+    con = connect(db)
+    init_db(con)
+    counts = purge_counts(con, before, args.app)
+    scope = " and ".join(
+        ([f"before {before}"] if before else [])
+        + ([f"app matching '{args.app}'"] if args.app else []))
+    days_bit = (f" and {counts['days']} day summaries"
+                if counts["days"] else "")
+    if not args.yes:
+        print(f"[privatecontext] dry run — would delete "
+              f"{counts['events']} events{days_bit} ({scope}). "
+              f"Re-run with --yes to delete.")
+        return 0
+    purge_data(con, before, args.app)
+    print(f"[privatecontext] deleted {counts['events']} events{days_bit} "
+          f"({scope}).")
+    return 0
 
 
 def cmd_mcp(args: argparse.Namespace) -> int:
@@ -132,13 +171,24 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--out", default=None, help="output .db path")
     e.set_defaults(func=cmd_export)
 
-    s = sub.add_parser("summarize", help="summarize a day with a local Ollama model")
+    s = sub.add_parser("summarize", help="summarize a day (or week) with a local Ollama model")
     s.add_argument("--date", default=None, help="YYYY-MM-DD (default: today)")
+    s.add_argument("--week", action="store_true",
+                   help="summarize the trailing 7 days ending at --date")
     s.add_argument("--model", default=DEFAULT_MODEL,
                    help=f"Ollama model (default: {DEFAULT_MODEL})")
     s.add_argument("--dry-run", action="store_true",
                    help="print the condensed digest without calling Ollama")
     s.set_defaults(func=cmd_summarize)
+
+    p = sub.add_parser("purge", help="delete old or app-specific captured data")
+    p.add_argument("--before", default=None,
+                   help="'Nd' (e.g. 90d) or YYYY-MM-DD: delete data older than this")
+    p.add_argument("--app", default=None,
+                   help="delete events for apps matching this (case-insensitive substring)")
+    p.add_argument("--yes", action="store_true",
+                   help="actually delete — without it, prints what would be deleted")
+    p.set_defaults(func=cmd_purge)
 
     m = sub.add_parser("mcp", help="run the MCP server over stdio")
     m.set_defaults(func=cmd_mcp)
