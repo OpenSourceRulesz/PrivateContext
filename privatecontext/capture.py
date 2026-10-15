@@ -209,7 +209,9 @@ def start_input_watchers(con, state: WatchState) -> list:
     try:
         from pynput import keyboard, mouse
     except Exception as e:
-        warn_once("pynput", f"pynput unavailable ({e}): click + AFK watchers disabled")
+        warn_once("pynput", f"pynput unavailable ({e}): click + AFK watchers "
+                            "disabled — install them with "
+                            'pip install "privatecontext[full]"')
         return []
 
     def touch() -> None:

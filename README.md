@@ -17,6 +17,13 @@ lets AI assistants query the diary.
 pip install privatecontext
 ```
 
+For click + AFK tracking as well (needs a compiler-free install on
+Windows/macOS; on Linux it needs Python headers for one dependency):
+
+```bash
+pip install "privatecontext[full]"
+```
+
 Or install from source:
 
 ```bash

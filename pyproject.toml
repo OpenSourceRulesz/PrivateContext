@@ -4,16 +4,24 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "privatecontext"
-version = "0.1.1"
+version = "0.1.2"
 description = "Lightweight, local-first activity tracker"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
 dependencies = [
-    "pynput",  # click + activity-timestamp watchers
+    # NOTE: pynput is intentionally NOT a hard dependency. On Linux it
+    # pulls in evdev, which needs C headers to build — a lightweight
+    # tracker must install with pure wheels everywhere. Click + AFK
+    # capture lives in the `full` extra instead.
     "mss",     # screenshots (opt-in only)
     "pillow",  # JPEG screenshot encoding (opt-in screenshots)
     "mcp>=2",  # first-party MCP server (`pctx mcp`), stdio transport
+]
+
+[project.optional-dependencies]
+full = [
+    "pynput",  # click watcher + keyboard-activity timestamps for AFK
 ]
 
 [project.scripts]
