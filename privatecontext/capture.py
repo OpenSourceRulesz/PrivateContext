@@ -31,7 +31,8 @@ import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from .db import connect, data_dir, init_db, log_event, strip_url
+from .db import (connect, data_dir, denylist_match, get_denylist, init_db,
+                   log_event, strip_url)
 
 POLL_S = 1.0
 IDLE_AFTER_S = 180
@@ -279,11 +280,14 @@ class WatchState:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.last_input = time.time()
+        self.denied = 0  # events skipped by the denylist this session
 
 
-def start_input_watchers(con, state: WatchState) -> list:
+def start_input_watchers(con, state: WatchState,
+                         denylist: list[str] | None = None) -> list:
     """Mouse + keyboard listeners. The keyboard listener records a timestamp
     only — key contents are never stored, anywhere, ever."""
+    denylist = denylist or []
     try:
         from pynput import keyboard, mouse
     except Exception as e:
@@ -303,6 +307,9 @@ def start_input_watchers(con, state: WatchState) -> list:
         w = active_window() or {}
         url = browser_url(w.get("app"), w.get("title"))
         with state.lock:  # sqlite handle is shared with the main loop
+            if denylist_match(denylist, w.get("app"), w.get("title")):
+                state.denied += 1
+                return
             log_event(con, "click", app=w.get("app"), title=w.get("title"),
                       url=url, x=int(x), y=int(y))
 
@@ -324,11 +331,14 @@ def start_input_watchers(con, state: WatchState) -> list:
 def run_capture(db_path: str | None = None, screenshots: bool = False) -> None:
     con = connect(db_path)
     init_db(con)
+    denylist = get_denylist(con)
     target = db_path or "default location"
     print(f"[privatecontext] capturing -> {target} "
           f"(screenshots={'ON' if screenshots else 'off'}) — Ctrl-C to stop")
+    if denylist:
+        print(f"[privatecontext] denylist active: {len(denylist)} pattern(s)")
     state = WatchState()
-    listeners = start_input_watchers(con, state)
+    listeners = start_input_watchers(con, state, denylist)
 
     last_sig: tuple = (None, None)
     last_url: str | None = None
@@ -351,16 +361,27 @@ def run_capture(db_path: str | None = None, screenshots: bool = False) -> None:
             sig = (w.get("app"), w.get("title"))
             if any(sig) and sig != last_sig:
                 url = browser_url(w.get("app"), w.get("title"))
+                app_changed = sig[0] != last_sig[0]
+                url_changed = url != last_url
+                # Update the signature even when denied, so a denied window
+                # that's still focused doesn't re-trigger every second.
+                last_sig, last_url = sig, url
+                if denylist_match(denylist, sig[0], sig[1]):
+                    with state.lock:
+                        state.denied += 1
+                    continue
                 log_event(con, "window", app=sig[0], title=sig[1], url=url)
-                if screenshots and (sig[0] != last_sig[0] or url != last_url):
+                if screenshots and (app_changed or url_changed):
                     rel = take_screenshot(now)
                     log_event(con, "shot", app=sig[0], title=sig[1], url=url)
                     # shot path is derivable from ts: shots/YYYY-MM-DD/HHMMSS.jpg
                     _ = rel
-                last_sig, last_url = sig, url
             time.sleep(POLL_S)
     except KeyboardInterrupt:
         print("\n[privatecontext] stopped.")
+        if state.denied:
+            print(f"[privatecontext] skipped {state.denied} event(s) "
+                  f"matching the denylist.")
     finally:
         for lst in listeners:
             lst.stop()

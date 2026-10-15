@@ -1,13 +1,16 @@
 """SQLite helpers for PrivateContext: connect, init, insert, search, usage."""
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .tagging import extract_tags
+
+DENYLIST_KEY = "denylist"
 
 APP_NAME = "privatecontext"
 DB_NAME = "context.db"
@@ -187,3 +190,91 @@ def search(con: sqlite3.Connection, q: str, limit: int = 50) -> list[dict]:
 def counts(con: sqlite3.Connection) -> dict:
     rows = con.execute("SELECT type, COUNT(*) AS n FROM events GROUP BY type").fetchall()
     return {r["type"]: r["n"] for r in rows}
+
+
+# ---------------------------------------------------------------------------
+# kv store + denylist
+# ---------------------------------------------------------------------------
+
+def kv_get(con: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
+    row = con.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def kv_set(con: sqlite3.Connection, key: str, value: str) -> None:
+    con.execute(
+        "INSERT INTO kv(key, value) VALUES (?, ?)"
+        " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+    con.commit()
+
+
+def get_denylist(con: sqlite3.Connection) -> list[str]:
+    """Denylist patterns (JSON array in kv). Empty list = allow everything."""
+    raw = kv_get(con, DENYLIST_KEY)
+    if not raw:
+        return []
+    try:
+        val = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return [str(p) for p in val] if isinstance(val, list) else []
+
+
+def set_denylist(con: sqlite3.Connection, patterns: list[str]) -> None:
+    kv_set(con, DENYLIST_KEY, json.dumps(sorted(set(patterns))))
+
+
+def denylist_match(patterns: list[str], app: str | None,
+                   title: str | None) -> bool:
+    """True if any pattern is a case-insensitive substring of app or title.
+    Empty pattern list never matches (allow-all default)."""
+    if not patterns:
+        return False
+    hay = f"{app or ''}\n{title or ''}".lower()
+    return any(p and p.lower() in hay for p in patterns)
+
+
+# ---------------------------------------------------------------------------
+# usage aggregation
+# ---------------------------------------------------------------------------
+
+def tag_usage(con: sqlite3.Connection, cap_s: float = 600) -> list[tuple[str, float]]:
+    """Seconds per tag today. Each window event owns the time until the next
+    window event (capped, exactly like app_usage); that time is credited to
+    every tag on the event, so multi-tagged events count toward each tag."""
+    start, _ = today_range()
+    rows = con.execute(
+        "SELECT ts, tags FROM events WHERE type = 'window' AND ts >= ? ORDER BY ts",
+        (start,),
+    ).fetchall()
+    usage: dict[str, float] = {}
+    now = time.time()
+    for i, r in enumerate(rows):
+        nxt = rows[i + 1]["ts"] if i + 1 < len(rows) else now
+        dur = min(max(0.0, nxt - r["ts"]), cap_s)
+        for t in (r["tags"] or "").split(","):
+            t = t.strip()
+            if t:
+                usage[t] = usage.get(t, 0.0) + dur
+    return sorted(usage.items(), key=lambda kv: -kv[1])
+
+
+def day_recap(con: sqlite3.Connection) -> dict:
+    """Today's summary from the days table, else yesterday's (labeled).
+    Empty dict when no summary exists — callers must not nag."""
+    today = datetime.now().astimezone().date().isoformat()
+    row = con.execute("SELECT summary FROM days WHERE date = ?",
+                      (today,)).fetchone()
+    if row and row["summary"]:
+        return {"label": "Today's recap", "date": today,
+                "summary": row["summary"]}
+    yest = (datetime.now().astimezone().date()
+            - timedelta(days=1)).isoformat()
+    row = con.execute("SELECT summary FROM days WHERE date = ?",
+                      (yest,)).fetchone()
+    if row and row["summary"]:
+        return {"label": "Yesterday's recap", "date": yest,
+                "summary": row["summary"]}
+    return {}

@@ -12,7 +12,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from .db import app_usage, connect, init_db, search, timeline
+from .db import app_usage, connect, day_recap, init_db, search, tag_usage, timeline
 
 PAGE = """<!doctype html>
 <html><head><meta charset="utf-8">
@@ -39,10 +39,15 @@ button:hover{background:#333}
 a{color:#9cf}
 #purge{background:#5a1d1d;border-color:#a33;margin-top:24px;font-size:1.1em;padding:12px 22px}
 #purge:hover{background:#7a2626}
+.card{background:#1d2a1d;border:1px solid #3a5a3a;border-radius:8px;padding:14px 18px;margin:14px 0}
+.card h3{margin:0 0 8px 0;color:#8f8}
+.card small{color:#888;font-weight:normal}
+.card p{margin:0;white-space:pre-wrap}
 </style></head>
 <body>
 <h1>&#9673; PrivateContext <small>v0 &middot; local only</small></h1>
 <p id="status">loading&hellip;</p>
+<div id="recap"></div>
 <div>
 <input id="q" placeholder="Search everything: servicenow, eduroam, zoom&hellip;" autocomplete="off">
 <button onclick="doSearch()">Search</button>
@@ -50,6 +55,7 @@ a{color:#9cf}
 <div id="results"></div>
 <h2>Today &mdash; app usage</h2>
 <div id="usage"></div>
+<div id="tagsec"><h2>Today &mdash; by tag</h2><div id="tagusage"></div></div>
 <h2>Timeline (newest first)</h2>
 <div id="timeline"></div>
 <hr>
@@ -70,16 +76,33 @@ function evHTML(e){
     (e.duration_ms!=null ? ' <span class="c">'+Math.round(e.duration_ms/1000)+'s idle</span>' : '')+
     '</div>';
 }
+function bars(pairs){
+  const max = Math.max(1, ...pairs.map(x=>x[1]));
+  return pairs.map(pair =>
+    '<div class="bar"><span class="al">'+esc(pair[0])+'</span>'+
+    '<div class="track"><div class="fill" style="width:'+(100*pair[1]/max).toFixed(1)+'%"></div></div>'+
+    '<span class="v">'+(pair[1]/60).toFixed(0)+'m</span></div>').join('');
+}
+async function loadRecap(){
+  try{
+    const r = await j('/api/recap');
+    if(r && r.summary){
+      document.getElementById('recap').innerHTML =
+        '<div class="card"><h3>'+esc(r.label)+' <small>'+esc(r.date)+'</small></h3>'+
+        '<p>'+esc(r.summary)+'</p></div>';
+    }
+  }catch(e){ /* no summary yet — no card, no nagging */ }
+}
 async function refresh(){
   try{
     const tl = await j('/api/timeline?limit=200');
     const u = await j('/api/usage');
+    const t = await j('/api/tagusage');
     document.getElementById('timeline').innerHTML = tl.map(evHTML).join('');
-    const max = Math.max(1, ...u.map(x=>x[1]));
-    document.getElementById('usage').innerHTML = u.map(pair =>
-      '<div class="bar"><span class="al">'+esc(pair[0])+'</span>'+
-      '<div class="track"><div class="fill" style="width:'+(100*pair[1]/max).toFixed(1)+'%"></div></div>'+
-      '<span class="v">'+(pair[1]/60).toFixed(0)+'m</span></div>').join('');
+    document.getElementById('usage').innerHTML = bars(u);
+    const tagsec = document.getElementById('tagsec');
+    if(t.length){ tagsec.style.display=''; document.getElementById('tagusage').innerHTML = bars(t.slice(0,10)); }
+    else { tagsec.style.display='none'; }
     document.getElementById('status').textContent =
       tl.length+' events today · updated '+new Date().toLocaleTimeString()+' (auto-refreshes every 2s)';
   }catch(e){ document.getElementById('status').textContent = 'error: '+e; }
@@ -99,6 +122,7 @@ async function doPurge(){
 }
 document.getElementById('q').addEventListener('keydown', e=>{ if(e.key==='Enter') doSearch(); });
 setInterval(refresh, 2000);
+loadRecap();
 refresh();
 </script>
 </body></html>
@@ -135,6 +159,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self._with_db(lambda db: timeline(db, min(limit, 1000))))
         elif u.path == "/api/usage":
             self._json(self._with_db(app_usage))
+        elif u.path == "/api/tagusage":
+            self._json(self._with_db(tag_usage))
+        elif u.path == "/api/recap":
+            self._json(self._with_db(day_recap))
         elif u.path == "/api/search":
             q = parse_qs(u.query).get("q", [""])[0]
             self._json(self._with_db(lambda db: search(db, q)))

@@ -9,9 +9,13 @@ from datetime import date
 from pathlib import Path
 
 from . import __version__
+from .autostart import install as autostart_install
+from .autostart import status as autostart_status
+from .autostart import uninstall as autostart_uninstall
 from .capture import run_capture, simulate
 from .dashboard import serve
-from .db import connect, counts, default_db_path, init_db
+from .db import (connect, counts, default_db_path, get_denylist, init_db,
+                 set_denylist)
 from .importers import (RefusedError, import_activitywatch, import_browser,
                         import_csv, import_json, import_screenpipe)
 from .summarize import DEFAULT_MODEL, summarize_day
@@ -164,6 +168,23 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--dry-run", action="store_true",
                    help="print what would be imported without writing anything")
     i.set_defaults(func=cmd_import)
+
+    a = sub.add_parser("autostart", help="run capture at login")
+    a.add_argument("action", choices=["install", "uninstall", "status"],
+                   help="install, remove, or check the login autostart")
+    a.set_defaults(func=cmd_autostart)
+
+    dl = sub.add_parser("denylist", help="exclude apps/windows from capture")
+    dl.add_argument("action", choices=["add", "remove", "list", "clear"],
+                    help="manage denylist patterns (case-insensitive substrings)")
+    dl.add_argument("pattern", nargs="?", default=None,
+                    help="pattern for add/remove")
+    dl.set_defaults(func=cmd_denylist)
+
+    su = sub.add_parser("setup", help="first-run wizard")
+    su.add_argument("--yes", action="store_true",
+                    help="accept defaults non-interactively")
+    su.set_defaults(func=cmd_setup)
     return ap
 
 
@@ -193,6 +214,60 @@ def cmd_import(args: argparse.Namespace) -> int:
     except RefusedError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
+
+
+def cmd_autostart(args: argparse.Namespace) -> int:
+    if args.action == "install":
+        ok, msg = autostart_install()
+    elif args.action == "uninstall":
+        ok, msg = autostart_uninstall()
+    else:
+        ok, msg = autostart_status()
+    print(f"[privatecontext] {msg}")
+    return 0 if ok else 1
+
+
+def cmd_denylist(args: argparse.Namespace) -> int:
+    db = _resolve_db(args.db) if args.db else default_db_path()
+    con = connect(db)
+    init_db(con)
+    patterns = get_denylist(con)
+    if args.action == "list":
+        if patterns:
+            print("[privatecontext] denylist patterns:")
+            for p in patterns:
+                print(f"  {p}")
+        else:
+            print("[privatecontext] denylist is empty — everything is captured.")
+        return 0
+    if args.action == "clear":
+        set_denylist(con, [])
+        print(f"[privatecontext] denylist cleared ({len(patterns)} removed).")
+        return 0
+    if not args.pattern:
+        print("denylist add/remove needs a pattern", file=sys.stderr)
+        return 2
+    if args.action == "add":
+        if args.pattern in patterns:
+            print(f"[privatecontext] '{args.pattern}' is already denied.")
+        else:
+            set_denylist(con, patterns + [args.pattern])
+            print(f"[privatecontext] denied '{args.pattern}' "
+                  f"({len(patterns) + 1} pattern(s)). Restart capture to apply.")
+        return 0
+    # remove
+    if args.pattern in patterns:
+        set_denylist(con, [p for p in patterns if p != args.pattern])
+        print(f"[privatecontext] '{args.pattern}' is captured again.")
+    else:
+        print(f"[privatecontext] '{args.pattern}' was not on the denylist.")
+    return 0
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    from .setup import run_setup
+    db = _resolve_db(args.db) if args.db else None
+    return run_setup(yes=args.yes, db_path=db)
 
 
 def cmd_retag(args: argparse.Namespace) -> int:

@@ -32,6 +32,13 @@ Then check what works on your machine:
 pctx doctor
 ```
 
+Or let the wizard do it all — capability check, optional browser-history
+import, optional login autostart:
+
+```bash
+pctx setup
+```
+
 Or install from source:
 
 ```bash
@@ -66,6 +73,50 @@ pctx export --scrubbed --out ./my-week.db
 
 Data lives in `~/.local/share/privatecontext/context.db`
 (or `$XDG_DATA_HOME/privatecontext/context.db`).
+
+## Autostart
+
+A tracker you have to remember to start isn't tracking. One command,
+no admin rights needed:
+
+```bash
+pctx autostart install    # runs `pctx capture` at every login
+pctx autostart status     # check whether it's installed
+pctx autostart uninstall  # remove it again
+```
+
+Windows uses Task Scheduler (no console window), Linux a systemd user
+service (XDG autostart entry as fallback), macOS a LaunchAgent.
+
+## Today by tag
+
+The dashboard has a "by tag" section next to app usage: time per
+auto-tagged project or ticket (`inc0012345`, `privatecontext`, …),
+using the same capped durations as app usage. No tags yet → the
+section hides itself.
+
+## Denylist
+
+Some windows should never be recorded. Patterns are case-insensitive
+substrings matched against app and title, checked before anything is
+logged:
+
+```bash
+pctx denylist add 1password
+pctx denylist list
+pctx denylist remove 1password
+```
+
+Denied events are skipped silently (the count prints when capture
+stops). Restart capture after changing the list. Imports bypass the
+denylist — importing is an explicit action, so your history comes over
+as-is.
+
+## Day recap card
+
+When the nightly summarizer has written a recap, the dashboard shows
+it in a card at the top — today's if present, otherwise yesterday's
+labeled as such. No summary yet → no card, no nagging.
 
 ## Importing your history
 
