@@ -58,16 +58,24 @@ Start capturing for real (Ctrl-C to stop):
 pctx capture
 ```
 
-Open the dashboard:
+## The journal
 
 ```bash
 pctx dashboard
-# -> http://127.0.0.1:18790  (auto-refreshes every 2s)
+# -> http://127.0.0.1:18790
 ```
 
-The dashboard isn't today-locked: the date picker (arrows + calendar)
-flips every section — timeline, app usage, by-tag, recap — to any past
-day. Auto-refresh only runs while you're viewing today.
+The dashboard is a paper journal, not a control panel: warm paper
+background, serif type, one deep-teal accent — and zero external
+assets. No webfonts, no CDN; the page loads nothing from the network,
+because local-first means the rendering is local too. Top to bottom:
+a masthead with the date set large ("Thursday, October 15"),
+"Today's entry" (the Ollama recap as prose, with a drop cap),
+"Where the day went" (app-usage bars), "Marginalia" (#tags),
+and "The hours" (the timeline grouped into Morning / Afternoon /
+Evening / Night, each entry with its duration in the margin).
+Flip pages with ← Yesterday · Today · Tomorrow → — every section
+follows the date. Auto-refresh only runs while you're viewing today.
 
 Export a shareable copy (screenshots excluded):
 
@@ -97,10 +105,10 @@ Run key instead — still no admin needed.
 
 ## Today by tag
 
-The dashboard has a "by tag" section next to app usage: time per
-auto-tagged project or ticket (`inc0012345`, `privatecontext`, …),
-using the same capped durations as app usage. No tags yet → the
-section hides itself.
+The journal's "Marginalia" section renders auto-tagged projects and
+tickets as `#chips` (`#inc0012345`, `#privatecontext`, …), using the
+same capped durations as app usage. No tags yet → the section hides
+itself.
 
 ## Denylist
 
@@ -121,9 +129,10 @@ as-is.
 
 ## Day recap card
 
-When the nightly summarizer has written a recap, the dashboard shows
-it in a card at the top — today's if present, otherwise yesterday's
-labeled as such. No summary yet → no card, no nagging.
+When the nightly summarizer has written a recap, it becomes "Today's
+entry" at the top of the journal — today's if present, otherwise
+yesterday's, labeled as such. No summary yet → a quiet placeholder
+("Tonight's entry hasn't been written yet."), no nagging.
 
 ## Importing your history
 
