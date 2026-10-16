@@ -4,11 +4,15 @@ A paper journal, not a control panel: warm paper background, serif type,
 one accent color, zero external assets (no webfonts, no CDN — local-first
 means the page loads nothing from the network). The page polls the same
 JSON APIs every 2 seconds while viewing today — live updates without
-WebSockets. Views: the day's entry (Ollama recap as prose), where the day
-went (app-usage bars), marginalia (#tags), the hours (timeline grouped by
-part of day), FTS5 search, and a quiet purge control. Every section is
-date-addressable via ?date=YYYY-MM-DD; the masthead flips pages like a
-diary (Yesterday / Today / Tomorrow).
+WebSockets. Views: the day's entry (Ollama recap as prose, with quiet
+regenerate/remove controls), where the day went (app-usage bars),
+marginalia (#tags), the hours (timeline grouped by part of day), a Notes
+tab for handwritten per-day notes (which feed into summaries), manual
+stickers to mark days that mattered, FTS5 search, and a quiet purge
+control. Every section is date-addressable via ?date=YYYY-MM-DD; the
+masthead flips pages like a diary (Yesterday / Today / Tomorrow). A
+Journal/Diary theme toggle (persisted server-side) swaps the monotone
+paper skin for a colorful one — same HTML, CSS variables only.
 """
 from __future__ import annotations
 
@@ -19,66 +23,122 @@ from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from .db import app_usage, connect, day_recap, init_db, search, tag_usage, timeline
+from .db import (app_usage, connect, day_recap, default_db_path, get_note,
+                 get_sticker, get_theme, init_db, remove_day_entry, search,
+                 set_note, set_sticker, set_theme, tag_usage, timeline)
+from .summarize import (DEFAULT_MODEL, ollama_hint, ollama_reachable,
+                        summarize_day)
 
 PAGE = """<!doctype html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PrivateContext &middot; A Local Journal</title>
 <style>
-:root{color-scheme:light}
-body{font-family:Georgia,'Times New Roman',serif;background:#faf6ee;color:#2a2620;
+:root{color-scheme:light;
+  /* Journal (default): monotone paper. Diary overrides below. */
+  --paper:#faf6ee; --ink:#2a2620; --muted:#8a7f6a; --muted2:#6b5f4b;
+  --accent:#0f766e; --accent-hi:#0c655e; --accent-ink:#0d5c56;
+  --rule:#e0d5bd; --card:#fffdf7; --track:#f0e8d5; --chipbg:#e9f3f1;
+  --faint:#cfc4ac; --sepline:#d8cdb4; --placeholder:#a89a7d;
+  --purge:#b3a488; --purge-hi:#8a6f4d; --radius:3px;
+}
+body[data-theme="diary"]{
+  /* Diary: colorful, playful — same HTML, candy accents, rounder shapes. */
+  --paper:#fdf3e6; --ink:#3b2a1e; --muted:#a3805c; --muted2:#7d6547;
+  --accent:#d6457b; --accent-hi:#b83a6c; --accent-ink:#a52c5c;
+  --rule:#eed7b8; --card:#fffaf1; --track:#f6e7cd; --chipbg:#fbe3ee;
+  --faint:#dcc39a; --sepline:#e3cda6; --placeholder:#c09a72;
+  --purge:#c4a075; --purge-hi:#9a6f45; --radius:14px;
+}
+body{font-family:Georgia,'Times New Roman',serif;background:var(--paper);color:var(--ink);
      margin:0;line-height:1.65}
 .page{max-width:720px;margin:0 auto;padding:56px 30px 90px}
-.eyebrow{text-align:center;font-size:11px;letter-spacing:4px;text-transform:uppercase;color:#8a7f6a}
+.eyebrow{text-align:center;font-size:11px;letter-spacing:4px;text-transform:uppercase;color:var(--muted)}
 h1.dateline{text-align:center;font-weight:400;font-size:3.1em;margin:14px 0 2px;line-height:1.15}
-.year{text-align:center;color:#8a7f6a;font-size:1.05em;letter-spacing:2px}
+#stickerBig{font-size:0.72em;vertical-align:baseline;margin-left:12px;cursor:pointer}
+.year{text-align:center;color:var(--muted);font-size:1.05em;letter-spacing:2px}
 .pagenav{display:flex;justify-content:center;align-items:center;gap:4px;margin:22px 0 6px}
-.pagenav button{background:none;border:none;color:#0f766e;font-family:inherit;
+.pagenav button{background:none;border:none;color:var(--accent);font-family:inherit;
      font-size:1.02em;cursor:pointer;padding:6px 10px}
-.pagenav button:disabled{color:#cfc4ac;cursor:default}
+.pagenav button:disabled{color:var(--faint);cursor:default}
 .pagenav button:not(:disabled):hover{text-decoration:underline}
-.pagenav .sep{color:#d8cdb4}
+.pagenav .sep{color:var(--sepline)}
+.stickrow{text-align:center;margin:12px 0 0;min-height:30px}
+.stickerbtn{background:none;border:none;font-family:inherit;font-size:0.92em;
+     color:var(--muted);cursor:pointer}
+.stickerbtn:hover{color:var(--accent)}
+.picker{display:flex;justify-content:center;gap:6px;margin-top:10px;flex-wrap:wrap}
+.picker button{background:var(--card);border:1px solid var(--rule);border-radius:var(--radius);
+     font-size:1.7em;padding:6px 10px;cursor:pointer;line-height:1.2}
+.picker button:hover{border-color:var(--accent)}
+.picker button.clear{font-size:0.85em;font-family:inherit;color:var(--muted);padding:6px 12px}
+.themerow{text-align:center;margin:12px 0 0;font-size:0.92em;color:var(--muted)}
+.themerow button{background:none;border:none;font-family:inherit;font-size:1em;
+     color:var(--muted);cursor:pointer;padding:4px 8px}
+.themerow button.on{color:var(--accent);font-weight:700}
+.themerow button:hover{color:var(--accent)}
+.themerow .sep{color:var(--sepline)}
+.tabs{display:flex;justify-content:center;gap:6px;margin:20px 0 0}
+.tabs button{background:none;border:none;font-family:inherit;font-size:1.05em;
+     color:var(--muted);cursor:pointer;padding:8px 20px;border-bottom:2px solid transparent}
+.tabs button.on{color:var(--accent);border-bottom-color:var(--accent)}
+.tabs button:hover{color:var(--accent)}
 .searchrow{display:flex;gap:8px;justify-content:center;margin:26px 0 6px}
 .searchrow input{font-family:inherit;font-size:1em;padding:10px 16px;width:min(420px,68%);
-     border:1px solid #e0d5bd;border-radius:999px;background:#fffdf7;color:#2a2620}
-.searchrow input::placeholder{color:#a89a7d;font-style:italic}
+     border:1px solid var(--rule);border-radius:999px;background:var(--card);color:var(--ink)}
+.searchrow input::placeholder{color:var(--placeholder);font-style:italic}
 .searchrow button{font-family:inherit;font-size:1em;padding:10px 22px;border-radius:999px;
-     border:1px solid #0f766e;background:#0f766e;color:#faf6ee;cursor:pointer}
-.searchrow button:hover{background:#0c655e}
+     border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer}
+.searchrow button:hover{background:var(--accent-hi)}
 h2.sec{font-weight:400;font-size:1.6em;margin:54px 0 4px;padding-bottom:8px;
-     border-bottom:1px solid #e0d5bd}
-h2.sec small{font-size:0.62em;color:#8a7f6a}
+     border-bottom:1px solid var(--rule)}
+h2.sec small{font-size:0.62em;color:var(--muted)}
 .entry{font-size:1.1em}
 .entry p{margin:0 0 1.1em;line-height:1.8}
 .entry p:first-of-type::first-letter{font-size:3.3em;float:left;line-height:0.82;
-     padding:6px 10px 0 0;color:#0f766e}
-.entry .note{font-size:0.85em;color:#8a7f6a;font-style:italic}
-.placeholder{font-style:italic;color:#8a7f6a}
-.gentle{text-align:center;font-size:1.15em;margin:64px 0;color:#6b5f4b}
+     padding:6px 10px 0 0;color:var(--accent)}
+.entry .note{font-size:0.85em;color:var(--muted);font-style:italic}
+.entryctl{font-size:0.52em;vertical-align:middle;margin-left:16px;white-space:nowrap}
+.entryctl button{background:none;border:none;font-family:inherit;font-size:1em;
+     color:var(--muted);cursor:pointer;padding:4px 8px}
+.entryctl button:hover{color:var(--accent)}
+.entryctl button.danger:hover{color:#a33}
+.writing{font-style:italic;color:var(--muted);animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.55}50%{opacity:1}}
+.placeholder{font-style:italic;color:var(--muted)}
+.gentle{text-align:center;font-size:1.15em;margin:64px 0;color:var(--muted2)}
 .bar{display:flex;align-items:baseline;gap:12px;margin:9px 0}
 .bar .al{flex:none;width:190px;text-align:right;font-size:1.04em;white-space:nowrap;
      overflow:hidden;text-overflow:ellipsis}
-.bar .track{flex:1;background:#f0e8d5;border-radius:3px;height:12px}
-.bar .fill{background:#0f766e;height:12px;border-radius:3px;opacity:0.88}
-.bar .v{flex:none;width:70px;color:#8a7f6a;font-size:0.95em;font-variant-numeric:tabular-nums}
+.bar .track{flex:1;background:var(--track);border-radius:var(--radius);height:12px}
+.bar .fill{background:var(--accent);height:12px;border-radius:var(--radius);opacity:0.88}
+.bar .v{flex:none;width:70px;color:var(--muted);font-size:0.95em;font-variant-numeric:tabular-nums}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
-.chip{border:1px solid #0f766e;color:#0d5c56;background:#e9f3f1;border-radius:999px;
+.chip{border:1px solid var(--accent);color:var(--accent-ink);background:var(--chipbg);border-radius:999px;
      padding:3px 13px;font-size:0.98em}
-.period{font-style:italic;font-size:1.18em;color:#6b5f4b;margin:30px 0 2px}
-.hour-ev{display:flex;gap:18px;padding:8px 0;border-bottom:1px dotted #e0d5bd;font-size:1.02em}
-.hour-ev .t{flex:none;width:78px;text-align:right;color:#8a7f6a;font-size:0.92em;
+.period{font-style:italic;font-size:1.18em;color:var(--muted2);margin:30px 0 2px}
+.hour-ev{display:flex;gap:18px;padding:8px 0;border-bottom:1px dotted var(--rule);font-size:1.02em}
+.hour-ev .t{flex:none;width:78px;text-align:right;color:var(--muted);font-size:0.92em;
      padding-top:3px;font-variant-numeric:tabular-nums}
 .hour-ev .b{min-width:0;flex:1}
 .hour-ev .app{font-weight:700}
-.hour-ev .dur{color:#8a7f6a;font-size:0.9em}
-.hour-ev .clicks{color:#0f766e}
-.hour-ev .url{color:#a89a7d;font-size:0.85em;display:block;white-space:nowrap;
+.hour-ev .dur{color:var(--muted);font-size:0.9em}
+.hour-ev .clicks{color:var(--accent)}
+.hour-ev .url{color:var(--placeholder);font-size:0.85em;display:block;white-space:nowrap;
      overflow:hidden;text-overflow:ellipsis}
-footer{margin-top:70px;text-align:center;color:#8a7f6a;font-size:0.95em}
+#noteBody{width:100%;min-height:300px;font-family:inherit;font-size:1.05em;line-height:1.7;
+     padding:18px 20px;border:1px solid var(--rule);border-radius:var(--radius);
+     background:var(--card);color:var(--ink);resize:vertical;margin-top:12px}
+#noteBody::placeholder{color:var(--placeholder);font-style:italic}
+.noterow{display:flex;align-items:center;gap:14px;margin-top:12px}
+.noterow button{font-family:inherit;font-size:1em;padding:9px 24px;border-radius:999px;
+     border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer}
+.noterow button:hover{background:var(--accent-hi)}
+.notesaved{color:var(--muted);font-style:italic;font-size:0.95em}
+footer{margin-top:70px;text-align:center;color:var(--muted);font-size:0.95em}
 footer .purgebtn{margin-top:14px;background:none;border:none;font-family:inherit;
-     font-size:0.88em;color:#b3a488;cursor:pointer;text-decoration:underline}
-footer .purgebtn:hover{color:#8a6f4d}
+     font-size:0.88em;color:var(--purge);cursor:pointer;text-decoration:underline}
+footer .purgebtn:hover{color:var(--purge-hi)}
 code{font-family:ui-monospace,SFMono-Regular,monospace;font-size:0.9em}
 @media (max-width:560px){
   .page{padding:36px 18px 70px}
@@ -91,7 +151,7 @@ code{font-family:ui-monospace,SFMono-Regular,monospace;font-size:0.9em}
 <div class="page">
 <header>
 <div class="eyebrow">PrivateContext &middot; A Local Journal</div>
-<h1 class="dateline"><span id="dowMonth">&hellip;</span></h1>
+<h1 class="dateline"><span id="dowMonth">&hellip;</span><span id="stickerBig" title="mark this day" onclick="togglePicker(event)"></span></h1>
 <div class="year" id="yearLine"></div>
 <nav class="pagenav">
 <button id="prevD" onclick="stepDate(-1)" title="previous day">&larr; Yesterday</button>
@@ -100,6 +160,13 @@ code{font-family:ui-monospace,SFMono-Regular,monospace;font-size:0.9em}
 <span class="sep">&middot;</span>
 <button id="nextD" onclick="stepDate(1)" title="next day">Tomorrow &rarr;</button>
 </nav>
+<div class="stickrow"><button id="stickerBtn" class="stickerbtn" onclick="togglePicker(event)">&#10022; mark this day</button>
+<div id="picker" class="picker" style="display:none"></div></div>
+<div class="themerow"><button id="themeJournal" onclick="setTheme('journal')">Journal</button><span class="sep"> &middot; </span><button id="themeDiary" onclick="setTheme('diary')">Diary</button></div>
+<nav class="tabs">
+<button id="tabJournal" class="on" onclick="showTab('journal')">Journal</button>
+<button id="tabNotes" onclick="showTab('notes')">Notes</button>
+</nav>
 </header>
 <div class="searchrow">
 <input id="q" placeholder="Search the journal&hellip;" autocomplete="off">
@@ -107,8 +174,9 @@ code{font-family:ui-monospace,SFMono-Regular,monospace;font-size:0.9em}
 </div>
 <div id="results"></div>
 <div id="emptyDay" class="gentle" style="display:none">Nothing recorded this day.</div>
+<div id="journalTab">
 <section id="entrySec">
-<h2 class="sec" id="entryH">Today&rsquo;s entry</h2>
+<h2 class="sec"><span id="entryH">Today&rsquo;s entry</span><span class="entryctl"><button id="regenBtn" onclick="regenEntry()" title="Ask the local model to write this entry again">&#8635; regenerate</button><button class="danger" onclick="removeEntry()" title="Delete this entry">remove</button></span></h2>
 <div id="entry" class="entry"></div>
 </section>
 <section id="usageSec">
@@ -123,6 +191,14 @@ code{font-family:ui-monospace,SFMono-Regular,monospace;font-size:0.9em}
 <h2 class="sec">The hours</h2>
 <div id="timeline"></div>
 </section>
+</div>
+<div id="notesTab" style="display:none">
+<section>
+<h2 class="sec">Notes <small>for this day</small></h2>
+<textarea id="noteBody" placeholder="Meeting notes, ideas, anything worth remembering&hellip;"></textarea>
+<div class="noterow"><button onclick="saveNote()">Save note</button><span id="noteSaved" class="notesaved"></span></div>
+</section>
+</div>
 <footer>
 <div id="colophon"></div>
 <div><button class="purgebtn" onclick="doPurge()">erase everything</button></div>
@@ -228,12 +304,150 @@ function hourEntryHTML(e, dur){
     esc(trunc(e.title, 80))+extra+durS+idle+urlS+'</span></div>';
 }
 function hoursHTML(tl, viewingToday){
-  const chrono = tl.slice().reverse();  // API is newest-first; the journal reads morning to night
+  const chrono = tl.slice().reverse();  // API is newest-first
   const durs = entryDurations(chrono, viewingToday);
-  return groupByPeriod(chrono).map((g, gi) =>
-    '<div class="period">'+g.name+'</div>'+
-    g.items.map(e => hourEntryHTML(e, durs[chrono.indexOf(e)])).join('')
+  const durOf = e => durs[chrono.indexOf(e)];
+  // Periods read morning-to-night like a journal; entries WITHIN each
+  // period read newest-first, so the latest activity is always on top
+  // and live updates never push it below the fold.
+  return groupByPeriod(chrono).map(g =>
+    '<div class="period" id="period-'+g.name+'">'+g.name+'</div>'+
+    g.items.slice().reverse().map(e => hourEntryHTML(e, durOf(e))).join('')
   ).join('');
+}
+/* One-time smooth scroll to the current time period on initial load.
+   Never fires on auto-refresh ticks, and never when viewing a past date. */
+let firstLoad = true;
+function scrollToNow(){
+  if(curDate !== todayISO()) return;
+  const el = document.getElementById('period-'+periodName(new Date().getHours()));
+  if(el && el.scrollIntoView) el.scrollIntoView({behavior:'smooth', block:'start'});
+}
+/* ---- Journal / Notes tabs ---- */
+function showTab(which){
+  document.getElementById('journalTab').style.display = which==='journal' ? '' : 'none';
+  document.getElementById('notesTab').style.display = which==='notes' ? '' : 'none';
+  document.getElementById('tabJournal').classList.toggle('on', which==='journal');
+  document.getElementById('tabNotes').classList.toggle('on', which==='notes');
+  if(which==='notes') loadNote();
+}
+/* ---- Per-day notes ---- */
+async function loadNote(){
+  try{
+    const r = await j('/api/notes?date='+curDate);
+    document.getElementById('noteBody').value = r.body || '';
+    document.getElementById('noteSaved').textContent = '';
+  }catch(e){ document.getElementById('noteSaved').textContent = 'error: '+e; }
+}
+async function saveNote(){
+  const body = document.getElementById('noteBody').value;
+  try{
+    const r = await j('/api/notes?date='+curDate, {method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({body})});
+    const now = new Date();
+    document.getElementById('noteSaved').textContent =
+      (r.body ? 'Saved \u2713 ' : 'Cleared \u2713 ') +
+      now.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+  }catch(e){ document.getElementById('noteSaved').textContent = 'error: '+e; }
+}
+/* ---- Stickers: awarded manually by the user, never auto-assigned ---- */
+const STICKERS = ['⭐','🦄','🧜','🚀','🎨','🔥','💡','🌙'];
+let curSticker = null;
+async function loadSticker(){
+  try{
+    const r = await j('/api/sticker?date='+curDate);
+    curSticker = r.sticker || null;
+    renderSticker();
+  }catch(e){}
+}
+function renderSticker(){
+  const big = document.getElementById('stickerBig');
+  const btn = document.getElementById('stickerBtn');
+  if(curSticker){ big.textContent = curSticker; big.style.display = ''; btn.innerHTML = '\u2726 change'; }
+  else { big.textContent = ''; big.style.display = 'none'; btn.innerHTML = '\u2726 mark this day'; }
+}
+function togglePicker(ev){
+  if(ev) ev.stopPropagation();
+  const p = document.getElementById('picker');
+  if(p.style.display === 'none'){
+    p.innerHTML = STICKERS.map(s =>
+      '<button data-s="'+s+'" class="stk">'+s+'</button>').join('') +
+      '<button class="clear" data-s="">clear</button>';
+    p.querySelectorAll('button').forEach(b =>
+      b.addEventListener('click', ()=>pickSticker(b.dataset.s || null)));
+    p.style.display = '';
+  } else p.style.display = 'none';
+}
+async function pickSticker(s){
+  try{
+    const r = await j('/api/sticker?date='+curDate, {method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({sticker:s})});
+    curSticker = r.sticker || null;
+    renderSticker();
+  }catch(e){ alert('error: '+e); }
+  document.getElementById('picker').style.display = 'none';
+}
+/* ---- Theme: journal (default monotone) vs diary (colorful) ---- */
+let curTheme = 'journal';
+async function loadTheme(){
+  try{
+    const r = await j('/api/theme');
+    applyTheme(r.theme || 'journal');
+  }catch(e){}
+}
+function applyTheme(t){
+  curTheme = t;
+  document.body.dataset.theme = t;  // server also renders it; no first-paint flash
+  document.getElementById('themeJournal').classList.toggle('on', t==='journal');
+  document.getElementById('themeDiary').classList.toggle('on', t==='diary');
+}
+async function setTheme(t){
+  try{
+    const r = await j('/api/theme', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({theme:t})});
+    applyTheme(r.theme);
+  }catch(e){ alert('error: '+e); }
+}
+/* ---- Entry controls: regenerate / remove ----
+   UI contract for regeneration: POST starts a background summarize and
+   returns immediately; poll /api/recap?date= every 3s until the summary
+   TEXT differs from what was shown (or 120s elapse → error). A failed
+   regeneration never deletes the existing entry — summarize_day only
+   writes to the days table on success. */
+let regenTimer = null;
+async function regenEntry(){
+  try{
+    const r = await j('/api/entry/regenerate?date='+curDate, {method:'POST'});
+    if(r.error){ alert(r.error); return; }
+  }catch(e){ alert('error: '+e); return; }
+  const before = document.getElementById('entry').dataset.summary || '';
+  document.getElementById('entry').innerHTML =
+    '<p class="writing">Writing today\u2019s entry\u2026</p>';
+  const t0 = Date.now();
+  if(regenTimer) clearInterval(regenTimer);
+  regenTimer = setInterval(async ()=>{
+    try{
+      const r = await j('/api/recap?date='+curDate);
+      const now = (r && r.summary) || '';
+      if(now && now !== before){
+        clearInterval(regenTimer); regenTimer = null;
+        document.getElementById('entry').dataset.summary = now;
+        document.getElementById('entry').innerHTML = entryHTML(r);
+      } else if(Date.now()-t0 > 120000){
+        clearInterval(regenTimer); regenTimer = null;
+        document.getElementById('entry').innerHTML =
+          '<p class="placeholder">Regeneration timed out \u2014 the previous entry was kept. Try again.</p>';
+      }
+    }catch(e){}
+  }, 3000);
+}
+async function removeEntry(){
+  if(!confirm("Delete today's entry? You can regenerate it later.")) return;
+  try{
+    await j('/api/entry/remove?date='+curDate, {method:'POST'});
+    document.getElementById('entry').dataset.summary = '';
+    refresh();
+  }catch(e){ alert('error: '+e); }
 }
 function renderMasthead(){
   const d = new Date(curDate+'T12:00:00');
@@ -252,6 +466,8 @@ async function loadEntry(){
     const url = (curDate === todayISO()) ? '/api/recap' : '/api/recap?date='+curDate;
     const r = await j(url);
     document.getElementById('entry').innerHTML = entryHTML(r);
+    // Track the raw summary text so regenEntry() can poll until it changes.
+    document.getElementById('entry').dataset.summary = (r && r.summary) || '';
     return !!(r && r.summary);
   }catch(e){ document.getElementById('entry').innerHTML = entryHTML(null); return false; }
 }
@@ -275,6 +491,9 @@ async function refresh(){
     document.getElementById('colophon').textContent =
       tl.length+' event'+(tl.length==1?'':'s')+' \u00b7 kept on this machine \u00b7 nothing uploaded';
     renderMasthead();
+    // One-time scroll to the current period on initial load only —
+    // never on auto-refresh ticks (scrollToNow guards past dates too).
+    if(firstLoad){ firstLoad = false; scrollToNow(); }
   }catch(e){
     document.getElementById('colophon').textContent = 'error: '+e;
   }
@@ -285,6 +504,8 @@ function setDate(d){
   document.getElementById('nextD').disabled = (d >= todayISO());
   if(timer){ clearInterval(timer); timer = null; }
   if(d === todayISO()){ timer = setInterval(refresh, 2000); }
+  loadSticker();
+  if(document.getElementById('notesTab').style.display !== 'none') loadNote();
   refresh();
 }
 function stepDate(n){
@@ -310,6 +531,14 @@ async function doPurge(){
   refresh();
 }
 document.getElementById('q').addEventListener('keydown', e=>{ if(e.key==='Enter') doSearch(); });
+document.getElementById('noteBody').addEventListener('keydown',
+  e=>{ if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='s'){ e.preventDefault(); saveNote(); } });
+document.addEventListener('click', e=>{
+  const p = document.getElementById('picker');
+  if(p.style.display !== 'none' && !p.contains(e.target) &&
+     e.target.id !== 'stickerBtn' && e.target.id !== 'stickerBig') p.style.display = 'none';
+});
+loadTheme();
 setDate(todayISO());
 </script>
 </body></html>
@@ -323,6 +552,23 @@ def _date_param(qs: dict) -> str | None:
     if not vals:
         return None
     return date.fromisoformat(vals[0]).isoformat()
+
+
+def _date_or_today(qs: dict) -> str:
+    """Validated ?date=, defaulting to today. Raises ValueError on bad
+    format (caller turns it into HTTP 400)."""
+    return _date_param(qs) or date.today().isoformat()
+
+
+def _regen_entry(db_path: str, date_str: str) -> None:
+    """Background entry regeneration. Opens its OWN sqlite connection —
+    connections are never shared across threads. summarize_day only
+    writes to the days table on success, so a failure (Ollama down,
+    timeout, crash) can never delete the existing entry."""
+    try:
+        summarize_day(db_path, date_str, DEFAULT_MODEL)
+    except Exception:
+        pass  # the UI polls /api/recap and times out on its own
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -340,10 +586,39 @@ class Handler(BaseHTTPRequestHandler):
         with self.server.lock:
             return fn(self.server.db)
 
+    def _read_json(self) -> dict:
+        """Parse a JSON POST body. Raises ValueError on bad JSON."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            length = 0
+        raw = self.rfile.read(length) if length > 0 else b""
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise ValueError("bad JSON body")
+        if not isinstance(data, dict):
+            raise ValueError("bad JSON body")
+        return data
+
+    def _dated(self, qs: dict) -> str | None:
+        """Validated ?date= (default today). Sends 400 and returns None
+        on bad format."""
+        try:
+            return _date_or_today(qs)
+        except ValueError:
+            self._json({"error": "bad date — use YYYY-MM-DD"}, 400)
+            return None
+
     def do_GET(self) -> None:
         u = urlparse(self.path)
         if u.path == "/":
-            body = PAGE.encode()
+            # Server-rendered theme: first paint is already correct, no flash.
+            theme = self._with_db(lambda db: get_theme(db))
+            body = PAGE.replace("<body>", f'<body data-theme="{theme}">',
+                                1).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -372,11 +647,27 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/search":
             q = parse_qs(u.query).get("q", [""])[0]
             self._json(self._with_db(lambda db: search(db, q)))
+        elif u.path == "/api/notes":
+            d = self._dated(parse_qs(u.query))
+            if d is None:
+                return
+            self._json(self._with_db(
+                lambda db: {"body": get_note(db, d) or ""}))
+        elif u.path == "/api/sticker":
+            d = self._dated(parse_qs(u.query))
+            if d is None:
+                return
+            self._json(self._with_db(
+                lambda db: {"sticker": get_sticker(db, d)}))
+        elif u.path == "/api/theme":
+            self._json(self._with_db(lambda db: {"theme": get_theme(db)}))
         else:
             self._json({"error": "not found"}, 404)
 
     def do_POST(self) -> None:
-        if urlparse(self.path).path == "/api/purge":
+        u = urlparse(self.path)
+        path = u.path
+        if path == "/api/purge":
             def _purge(db):
                 n = db.execute("DELETE FROM events").rowcount
                 db.execute("DELETE FROM days")
@@ -384,8 +675,57 @@ class Handler(BaseHTTPRequestHandler):
                 db.execute("VACUUM")
                 return {"deleted": n}
             self._json(self._with_db(_purge))
-        else:
+            return
+        if path not in ("/api/notes", "/api/sticker", "/api/theme",
+                        "/api/entry/regenerate", "/api/entry/remove"):
             self._json({"error": "not found"}, 404)
+            return
+        try:
+            data = self._read_json()
+        except ValueError:
+            self._json({"error": "bad JSON body"}, 400)
+            return
+        if path in ("/api/notes", "/api/sticker",
+                    "/api/entry/regenerate", "/api/entry/remove"):
+            d = self._dated(parse_qs(u.query))
+            if d is None:
+                return
+        if path == "/api/notes":
+            body = data.get("body", "")
+            if not isinstance(body, str):
+                self._json({"error": "body must be a string"}, 400)
+                return
+            saved = self._with_db(lambda db: set_note(db, d, body))
+            self._json({"saved": True, "body": saved})
+        elif path == "/api/sticker":
+            try:
+                s = self._with_db(
+                    lambda db: set_sticker(db, d, data.get("sticker")))
+            except ValueError as e:
+                self._json({"error": str(e)}, 400)
+                return
+            self._json({"sticker": s})
+        elif path == "/api/theme":
+            try:
+                t = self._with_db(lambda db: set_theme(db, data.get("theme")))
+            except ValueError as e:
+                self._json({"error": str(e)}, 400)
+                return
+            self._json({"theme": t})
+        elif path == "/api/entry/remove":
+            removed = self._with_db(lambda db: remove_day_entry(db, d))
+            self._json({"removed": removed})
+        elif path == "/api/entry/regenerate":
+            # Fast pre-flight so a dead Ollama returns the hint, not a hang.
+            if not ollama_reachable():
+                self._json({"error": ollama_hint()}, 503)
+                return
+            t = threading.Thread(
+                target=_regen_entry,
+                args=(self.server.db_path, d),
+                daemon=True)
+            t.start()
+            self._json({"started": True})
 
     def log_message(self, *args) -> None:  # keep the console quiet
         pass
@@ -410,6 +750,7 @@ def serve(db_path: str | None = None, port: int = 18790) -> None:
               file=sys.stderr)
         raise SystemExit(1)
     server.db = db  # type: ignore[attr-defined]
+    server.db_path = db_path if db_path else default_db_path()  # type: ignore[attr-defined]
     server.lock = threading.Lock()  # type: ignore[attr-defined]
     print(f"[privatecontext] dashboard at http://127.0.0.1:{port} — Ctrl-C to stop")
     try:

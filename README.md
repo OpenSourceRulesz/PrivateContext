@@ -134,6 +134,40 @@ entry" at the top of the journal — today's if present, otherwise
 yesterday's, labeled as such. No summary yet → a quiet placeholder
 ("Tonight's entry hasn't been written yet."), no nagging.
 
+Two quiet controls sit beside the entry heading. **↻ Regenerate**
+asks the local model to write the entry again in the background —
+the page polls until the new text lands (a failed run never deletes
+the old entry). **Remove** deletes the entry after a confirm; you can
+always regenerate it later. Users make mistakes; journals have
+erasers.
+
+## Notes
+
+Every day's page has a **Notes** tab next to **Journal**: a big
+textarea for meeting notes, ideas, anything worth remembering.
+Saves in place (Ctrl+S works), no page reload. Notes are the highest
+signal in the product — `pctx summarize` weaves "My notes today:"
+into the digest, so the nightly entry reflects what the day *meant*,
+not just what happened. Like everything else, notes never leave the
+machine; `pctx purge` deliberately leaves them alone.
+
+## Stickers
+
+Mark the days that mattered: ⭐ for a most-productive day, 🦄🧜🚀🎨🔥💡🌙
+for everything else. Stickers are awarded **manually, by you, from a
+curated set of 8** — the app never scores your days, because a journal
+isn't a manager. Hit "✦ mark this day" under the masthead date; the
+sticker sits beside the date from then on.
+
+## Diary mode
+
+The journal skin (monotone paper, deep-teal accent) is the default.
+**Diary** is its playful sibling: same page, candy accents, warmer
+paper, rounder shapes — implemented as pure CSS variable overrides,
+zero new assets. Toggle it in the masthead; the choice is stored
+server-side, so first paint is already correct. Journal is for the
+professional; Diary is for the kid who still wants the gold star.
+
 ## Importing your history
 
 Day one with a fresh tracker is empty. `pctx import` backfills history

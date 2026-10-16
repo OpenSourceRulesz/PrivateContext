@@ -314,6 +314,104 @@ def day_recap(con: sqlite3.Connection,
 
 
 # ---------------------------------------------------------------------------
+# notes (per-day handwritten notes, dashboard Notes tab)
+# ---------------------------------------------------------------------------
+
+def get_note(con: sqlite3.Connection, date_str: str) -> str | None:
+    """The user's handwritten note for a day, or None when unwritten."""
+    row = con.execute("SELECT body FROM notes WHERE date = ?",
+                      (date_str,)).fetchone()
+    if row and (row["body"] or "").strip():
+        return row["body"]
+    return None
+
+
+def set_note(con: sqlite3.Connection, date_str: str, body: str | None) -> str:
+    """Save a day's note. Empty/whitespace-only body deletes the row.
+    Returns the stored body ("" when deleted)."""
+    body = (body or "").strip()
+    if not body:
+        con.execute("DELETE FROM notes WHERE date = ?", (date_str,))
+        con.commit()
+        return ""
+    con.execute(
+        "INSERT INTO notes(date, body, updated_at) VALUES (?, ?, ?)"
+        " ON CONFLICT(date) DO UPDATE SET body = excluded.body,"
+        " updated_at = excluded.updated_at",
+        (date_str, body, int(time.time())),
+    )
+    con.commit()
+    return body
+
+
+# ---------------------------------------------------------------------------
+# stickers (per-day marks, awarded manually — never auto-assigned)
+# ---------------------------------------------------------------------------
+
+# The full curated set. Gold star = the user's own "most productive day"
+# ritual; the rest are for fun. Emoji render from system fonts — no assets.
+STICKER_SET = ["⭐", "🦄", "🧜", "🚀", "🎨", "🔥", "💡", "🌙"]
+
+
+def get_sticker(con: sqlite3.Connection, date_str: str) -> str | None:
+    """The sticker marking a day, or None when unmarked."""
+    row = con.execute("SELECT sticker FROM day_marks WHERE date = ?",
+                      (date_str,)).fetchone()
+    s = row["sticker"] if row else None
+    return s if s in STICKER_SET else None
+
+
+def set_sticker(con: sqlite3.Connection, date_str: str,
+                sticker: str | None) -> str | None:
+    """Award (or with None, clear) a day's sticker. Anything outside the
+    curated set raises ValueError — the set is the product, not a text field."""
+    if sticker is None:
+        con.execute("DELETE FROM day_marks WHERE date = ?", (date_str,))
+        con.commit()
+        return None
+    if sticker not in STICKER_SET:
+        raise ValueError(f"not a curated sticker: {sticker!r}")
+    con.execute(
+        "INSERT INTO day_marks(date, sticker) VALUES (?, ?)"
+        " ON CONFLICT(date) DO UPDATE SET sticker = excluded.sticker",
+        (date_str, sticker),
+    )
+    con.commit()
+    return sticker
+
+
+# ---------------------------------------------------------------------------
+# theme (Journal = default monotone paper; Diary = colorful playful skin)
+# ---------------------------------------------------------------------------
+
+THEME_KEY = "theme"
+THEMES = ("journal", "diary")
+
+
+def get_theme(con: sqlite3.Connection) -> str:
+    """Dashboard theme. Defaults to 'journal'; unknown stored values fall
+    back to it rather than breaking the page."""
+    v = kv_get(con, THEME_KEY, "journal")
+    return v if v in THEMES else "journal"
+
+
+def set_theme(con: sqlite3.Connection, theme: str) -> str:
+    """Persist the dashboard theme. Raises ValueError on unknown themes."""
+    if theme not in THEMES:
+        raise ValueError(f"unknown theme: {theme!r} (choose: journal, diary)")
+    kv_set(con, THEME_KEY, theme)
+    return theme
+
+
+def remove_day_entry(con: sqlite3.Connection, date_str: str) -> bool:
+    """Delete one day's summary row (exact date match — `week:` keys are
+    never touched). Returns True when a row was actually removed."""
+    cur = con.execute("DELETE FROM days WHERE date = ?", (date_str,))
+    con.commit()
+    return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
 # purge
 # ---------------------------------------------------------------------------
 

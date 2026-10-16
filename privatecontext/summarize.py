@@ -16,7 +16,7 @@ import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta
 
-from .db import connect, day_range, init_db
+from .db import connect, day_range, get_note, init_db
 
 def _ollama_base() -> str:
     """Ollama server base URL. Honors OLLAMA_HOST (Ollama's own convention,
@@ -172,21 +172,46 @@ def build_day_digest(con, date_str: str) -> tuple[str, dict]:
         lines.append("Candidate tokens seen in titles (for tagging): "
                      + ", ".join(tokens))
 
+    # The user's own handwritten notes carry the most signal of all —
+    # they say what the day *meant*, not just what happened.
+    note = get_note(con, date_str)
+    if note:
+        lines.append("")
+        lines.append("My notes today:")
+        lines.append(note.strip()[:2000])
+
     digest = "\n".join(lines)
     if len(digest) > MAX_DIGEST_CHARS:
         digest = digest[:MAX_DIGEST_CHARS] + "\n…[truncated]"
     return digest, stats
 
 
-PROMPT_TEMPLATE = """You are a private, on-device assistant. Summarize one day of computer activity from the CONDENSED digest below. The digest holds aggregates only — no raw events. Do not invent anything not in the digest.
+PROMPT_TEMPLATE = """You are the user's private journal. Write today's journal entry from the activity digest below. The digest holds aggregates only — no raw events.
 
-Write exactly two sections:
+Rules:
+- Write in FIRST PERSON, past tense — these are the user's own words ("I spent the morning…", never "the user spent…").
+- 3 to 6 bullets. Each bullet covers something DIFFERENT — never mention the same app or project twice.
+- Name apps, files, ticket IDs, and rough times taken straight from the digest.
+- Report ONLY what the digest shows. Never write "likely", "probably", or "some time", and never invent a purpose for an activity.
+- If the digest has a "My notes today:" section, weave what the user wrote into the entry — their words outrank the aggregates.
+- End with exactly one line starting with TAGS: followed by comma-separated tags (project/repo names, app names, ticket-like tokens such as INC0123456).
 
-RECAP:
-- 3 to 6 short bullets describing what the person worked on, naming apps, projects, and rough times.
+Example — digest:
+Day digest for 2026-10-15 (local time).
+Time per app (hours):
+  Edge                           3.20h
+  VS Code                        1.50h
+Top windows by time:
+   2.0h  Edge                 Kuali - ServiceNow
+   1.5h  VS Code              privatecontext - dashboard.py
+My notes today:
+Testing the Windows build; the Ollama install fought the proxy all afternoon.
 
-TAGS:
-a single comma-separated line of tags: project or repo names, app names, ticket-like tokens (e.g. INC0123456), topics.
+Entry:
+- I spent the morning in Edge on the Kuali ServiceNow portal, about 2h on tickets.
+- I put 1.5h into the PrivateContext Windows build in VS Code, working on the new dashboard.
+- My notes: testing the Windows build; the Ollama install fought the proxy all afternoon.
+TAGS: kuali, servicenow, privatecontext, edge, vs code
 
 Digest:
 ---
@@ -195,15 +220,35 @@ Digest:
 """
 
 
-WEEK_PROMPT_TEMPLATE = """You are a private, on-device assistant. Summarize one week of computer activity from the CONDENSED per-day digests below (each headed === YYYY-MM-DD ===). The digests hold aggregates only — no raw events. Do not invent anything not in the digests.
+WEEK_PROMPT_TEMPLATE = """You are the user's private journal. Write the week's journal entry from the CONDENSED per-day digests below (each headed === YYYY-MM-DD ===). The digests hold aggregates only — no raw events.
 
-Write exactly two sections:
+Rules:
+- Write in FIRST PERSON, past tense — these are the user's own words ("I spent the week…", never "the user spent…").
+- 5 to 10 bullets. Each bullet covers something DIFFERENT — never mention the same app or project twice.
+- Name apps, files, ticket IDs, and rough times taken straight from the digests. Call out trends, unusually heavy or light days, and recurring themes.
+- Report ONLY what the digests show. Never write "likely", "probably", or "some time", and never invent a purpose for an activity.
+- If a day has a "My notes" section, weave what the user wrote into the entry — their words outrank the aggregates.
+- End with exactly one line starting with TAGS: followed by comma-separated tags (project/repo names, app names, ticket-like tokens such as INC0123456).
 
-RECAP:
-- 5 to 10 short bullets describing what the person worked on across the week, naming apps, projects, and rough times. Call out trends, unusually heavy or light days, and recurring themes.
+Example — digests:
+=== 2026-10-13 ===
+Day digest for 2026-10-13 (local time).
+Time per app (hours):
+  Edge                           4.10h
+Top windows by time:
+   3.0h  Edge                 Kuali - ServiceNow
+=== 2026-10-14 ===
+Day digest for 2026-10-14 (local time).
+Time per app (hours):
+  VS Code                        5.00h
+Top windows by time:
+   4.2h  VS Code              tiny-jepa - train.py
 
-TAGS:
-a single comma-separated line of tags: project or repo names, app names, ticket-like tokens (e.g. INC0123456), topics.
+Entry:
+- I spent Monday buried in Edge on the Kuali ServiceNow portal, over 4h of ticket work.
+- Tuesday belonged to VS Code and tiny-jepa training runs, a solid 5h block.
+- The week tilted from support work toward deep project time as it went on.
+TAGS: kuali, servicenow, tiny-jepa, edge, vs code
 
 Digests:
 ---
@@ -246,6 +291,11 @@ def build_week_digest(con, end_date_str: str) -> tuple[str, dict]:
         else:
             stats["n_days_active"] += 1
             parts.append(f"=== {day} ===\n{digest}")
+        # The day digest already embeds "My notes today:"; keep an explicit
+        # per-day marker too so the weekly prompt can cite notes by day.
+        note = get_note(con, day)
+        if note and "My notes today:" not in digest:
+            parts[-1] += f"\n\nMy notes that day:\n{note.strip()[:2000]}"
     digest = "\n\n".join(parts)
     if len(digest) > WEEK_DIGEST_CHARS:
         digest = digest[:WEEK_DIGEST_CHARS] + "\n…[truncated]"
@@ -283,24 +333,73 @@ def _call_ollama(model: str, prompt: str) -> str:
     return body.get("response", "")
 
 
+def _dedupe_sentences(lines: list[str]) -> list[str]:
+    """Drop near-duplicate lines (the "Section 2 restates Section 1" failure
+    mode). A line is dropped when its normalized form equals, contains, or
+    is contained by an earlier line, or when word overlap >= 80%.
+    Deterministic, no dependencies."""
+    def norm(s: str) -> str:
+        return re.sub(r"[^a-z0-9 ]", "", s.lower()).strip()
+
+    seen: list[str] = []
+    out: list[str] = []
+    for line in lines:
+        n, words = norm(line), set(norm(line).split())
+        dup = False
+        for s in seen:
+            sn, swords = norm(s), set(norm(s).split())
+            if not words or not swords:
+                continue
+            if n == sn or n in sn or sn in n:
+                dup = True
+                break
+            if len(words & swords) / max(len(words), len(swords)) >= 0.8:
+                dup = True
+                break
+        if not dup:
+            seen.append(line)
+            out.append(line)
+    return out
+
+
 def _parse_summary(text: str, max_bullets: int = 8) -> tuple[str, str]:
-    """Split model output into (recap, tags). Tolerant of formatting wobble."""
-    recap_m = re.search(r"RECAP:\s*(.*?)(?:\nTAGS:|\Z)", text, re.S | re.I)
-    tags_m = re.search(r"TAGS:\s*(.*)", text, re.S | re.I)
-    recap = ""
-    if recap_m:
-        bullets = []
-        for line in recap_m.group(1).strip().splitlines():
-            line = line.strip().lstrip("-•* ").strip()
-            if line:
-                bullets.append("- " + line)
-        recap = "\n".join(bullets[:max_bullets])
+    """Split model output into (recap, tags).
+
+    Expected shape (per the prompt): bullet lines, then exactly one
+    `TAGS:` line. Robust fallback for misbehaving models: strips
+    "Section N:" headers, dedupes near-duplicate sentences, and never
+    returns an empty recap when text exists.
+    """
     tags = ""
-    if tags_m:
-        raw = tags_m.group(1).strip().splitlines()[0]
-        tags = ", ".join(t.strip() for t in raw.split(",") if t.strip())[:500]
-    if not recap:
-        recap = text.strip()[:2000]  # fall back to raw output
+    body_lines: list[str] = []
+    for line in text.splitlines():
+        m = re.match(r"(?i)^tags\s*:\s*(.*)$", line.strip())
+        if m:
+            tags = m.group(1).strip()
+        else:
+            body_lines.append(line)
+    bullets: list[str] = []
+    for line in body_lines:
+        line = re.sub(r"(?i)^section\s+\d+\s*:\s*", "", line.strip()).strip()
+        line = re.sub(r"^[-•*]\s*", "", line).strip()
+        # Skip stray headers like "RECAP:" left by older prompts.
+        if re.fullmatch(r"(?i)recap\s*:?", line):
+            continue
+        if line:
+            bullets.append(line)
+    bullets = _dedupe_sentences(bullets)
+    recap = "\n".join("- " + b for b in bullets[:max_bullets])
+    if tags:
+        tags = ", ".join(t.strip() for t in tags.split(",") if t.strip())[:500]
+    if not recap and text.strip():
+        cleaned = re.sub(r"(?i)^section\s+\d+\s*:\s*", "",
+                         text.strip(), flags=re.M)
+        cleaned_lines = [l.strip() for l in cleaned.splitlines()
+                         if l.strip()]
+        deduped = _dedupe_sentences(cleaned_lines)
+        recap = "\n".join("- " + b for b in deduped[:max_bullets])
+        if not recap:
+            recap = text.strip()[:2000]
     return recap, tags
 
 

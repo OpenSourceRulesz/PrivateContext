@@ -32,6 +32,23 @@ CREATE TABLE IF NOT EXISTS kv(
   value TEXT
 );
 
+-- Per-day handwritten notes (dashboard Notes tab). User-authored content:
+-- `pctx purge` never deletes these; erasing your own writing is always
+-- an explicit, separate choice.
+CREATE TABLE IF NOT EXISTS notes(
+  date       TEXT PRIMARY KEY,  -- YYYY-MM-DD, local time
+  body       TEXT NOT NULL,
+  updated_at INTEGER NOT NULL   -- unix epoch seconds
+);
+
+-- Per-day stickers, awarded manually by the user from a small curated
+-- emoji set (validated in db.py). Never auto-assigned: the app does not
+-- score your days; you mark the ones that mattered.
+CREATE TABLE IF NOT EXISTS day_marks(
+  date    TEXT PRIMARY KEY,  -- YYYY-MM-DD, local time
+  sticker TEXT NOT NULL       -- one emoji from STICKER_SET
+);
+
 -- Full-text search over the event log. External-content table kept in sync
 -- with `events` by the triggers below.
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts
