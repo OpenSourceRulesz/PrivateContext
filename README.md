@@ -73,7 +73,8 @@ a masthead with the date set large ("Thursday, October 15"),
 "Today's summary" (the Ollama recap as prose, with a drop cap),
 "Where the day went" (app-usage bars), "Marginalia" (#tags),
 and "The hours" (the timeline grouped into Morning / Afternoon /
-Evening / Night, each entry with its duration in the margin).
+Evening / Night, each entry with its duration in the margin; click a
+period header to collapse it — the choice is remembered per day).
 Flip pages with ← Yesterday · Today · Tomorrow → — every section
 follows the date. Auto-refresh only runs while you're viewing today.
 
@@ -168,7 +169,8 @@ zero new assets. Toggle it in the top-right corner (where dark/light
 modes usually live); on narrow screens it drops below the masthead.
 The choice is stored server-side, so first paint is already correct.
 In Diary mode a row of color dots appears beside the toggle —
-raspberry, ocean, forest, plum, tangerine. Journal stays monotone;
+raspberry, ocean, forest, plum, tangerine — and the whole page background
+tints to match (soft pink, blue, green, lavender, peach). Journal stays monotone;
 that's its identity. Journal is for the
 professional; Diary is for the kid who still wants the gold star.
 

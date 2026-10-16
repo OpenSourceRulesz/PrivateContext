@@ -44,10 +44,13 @@ PAGE = """<!doctype html>
   --purge:#b3a488; --purge-hi:#8a6f4d; --radius:3px;
 }
 body[data-theme="diary"]{
-  /* Diary: colorful, playful — same HTML, candy accents, rounder shapes. */
-  --paper:#fdf3e6; --ink:#3b2a1e; --muted:#a3805c; --muted2:#7d6547;
+  /* Diary: colorful, playful — same HTML, candy accents, rounder shapes.
+     Each accent below also tints the page background itself (paper, cards,
+     rules, tracks). Journal mode never reads data-accent, so its monotone
+     paper is untouched — verify no bare [data-accent] selector exists. */
+  --paper:#fbe9f1; --ink:#3b2a1e; --muted:#a3805c; --muted2:#7d6547;
   --accent:#d6457b; --accent-hi:#b83a6c; --accent-ink:#a52c5c;
-  --rule:#eed7b8; --card:#fffaf1; --track:#f6e7cd; --chipbg:#fbe3ee;
+  --rule:#f0cfdf; --card:#fff5fa; --track:#f6d9e8; --chipbg:#fbe3ee;
   --faint:#dcc39a; --sepline:#e3cda6; --placeholder:#c09a72;
   --purge:#c4a075; --purge-hi:#9a6f45; --radius:14px;
 }
@@ -55,17 +58,22 @@ body[data-theme="diary"]{
    visibly more playful than the monotone journal. */
 body[data-theme="diary"] .eyebrow{color:var(--accent)}
 body[data-theme="diary"] h2.sec{border-bottom:2px solid var(--accent)}
-/* Diary accent picker: raspberry is the base above; the other four
-   accents override it. Journal never reads data-accent — monotone is
-   its identity. */
+/* Per-accent full-page tints. --ink stays dark in all five for
+   readability; chips and cards tint harmoniously with the paper. */
+body[data-theme="diary"][data-accent="raspberry"]{
+  --paper:#fbe9f1;--card:#fff5fa;--rule:#f0cfdf;--track:#f6d9e8;--chipbg:#fbe3ee;}
 body[data-theme="diary"][data-accent="ocean"]{
-  --accent:#2563eb;--accent-hi:#1d4ed8;--accent-ink:#1e40af;--chipbg:#e4edfd;}
+  --accent:#2563eb;--accent-hi:#1d4ed8;--accent-ink:#1e40af;
+  --paper:#e9f1fd;--card:#f5f9fe;--rule:#c9dafb;--track:#d9e7fd;--chipbg:#e4edfd;}
 body[data-theme="diary"][data-accent="forest"]{
-  --accent:#16a34a;--accent-hi:#12853c;--accent-ink:#166534;--chipbg:#e3f4e9;}
+  --accent:#16a34a;--accent-hi:#12853c;--accent-ink:#166534;
+  --paper:#e9f5ec;--card:#f4faf6;--rule:#c9e8d4;--track:#daf0e3;--chipbg:#e3f4e9;}
 body[data-theme="diary"][data-accent="plum"]{
-  --accent:#9333ea;--accent-hi:#7d2bd6;--accent-ink:#6b21a8;--chipbg:#f1e5fd;}
+  --accent:#9333ea;--accent-hi:#7d2bd6;--accent-ink:#6b21a8;
+  --paper:#f1eafb;--card:#f8f3fe;--rule:#dccdf5;--track:#e9ddf9;--chipbg:#f1e5fd;}
 body[data-theme="diary"][data-accent="tangerine"]{
-  --accent:#ea580c;--accent-hi:#cf4e0a;--accent-ink:#c2410c;--chipbg:#fdeee1;}
+  --accent:#ea580c;--accent-hi:#cf4e0a;--accent-ink:#c2410c;
+  --paper:#fdf0e2;--card:#fef8f1;--rule:#f4dcba;--track:#f9e6cc;--chipbg:#fdeee1;}
 body{font-family:Georgia,'Times New Roman',serif;background:var(--paper);color:var(--ink);
      margin:0;line-height:1.65}
 .page{max-width:720px;margin:0 auto;padding:56px 30px 90px;position:relative}
@@ -137,7 +145,15 @@ h2.sec small{font-size:0.62em;color:var(--muted)}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
 .chip{border:1px solid var(--accent);color:var(--accent-ink);background:var(--chipbg);border-radius:999px;
      padding:3px 13px;font-size:0.98em}
-.period{font-style:italic;font-size:1.18em;color:var(--muted2);margin:30px 0 2px}
+/* "The hours" period headers are toggle buttons (chevron ▾/▸):
+   collapsing hides the period's entries so content below pulls up. */
+.periodhead{background:none;border:none;font-family:inherit;font-style:italic;
+     font-size:1.18em;color:var(--muted2);margin:30px 0 2px;padding:0;
+     cursor:pointer;display:flex;align-items:center;gap:10px;width:100%;text-align:left}
+.periodhead:hover{color:var(--accent)}
+.periodhead .chev{font-style:normal;font-size:0.8em;color:var(--accent);
+     display:inline-block;width:1.1em;flex:none}
+.periodbody.collapsed{display:none}
 .hour-ev{display:flex;gap:18px;padding:8px 0;border-bottom:1px dotted var(--rule);font-size:1.02em}
 .hour-ev .t{flex:none;width:78px;text-align:right;color:var(--muted);font-size:0.92em;
      padding-top:3px;font-variant-numeric:tabular-nums}
@@ -172,7 +188,7 @@ code{font-family:ui-monospace,SFMono-Regular,monospace;font-size:0.9em}
 <body>
 <div class="page">
 <header>
-<div class="eyebrow">PrivateContext &middot; A Local Journal</div>
+<div class="eyebrow" id="eyebrow">PrivateContext &middot; A Local Journal</div>
 <h1 class="dateline"><span id="dowMonth">&hellip;</span><span id="stickerBig" title="mark this day" onclick="togglePicker(event)"></span></h1>
 <div class="year" id="yearLine"></div>
 <nav class="pagenav">
@@ -325,24 +341,67 @@ function hourEntryHTML(e, dur){
     '<span class="b"><span class="app">'+esc(e.app||'(unknown)')+'</span> &mdash; '+
     esc(trunc(e.title, 80))+extra+durS+idle+urlS+'</span></div>';
 }
+/* Collapse state for "The hours" periods: UI state only, persisted in
+   localStorage keyed by viewed date + period (never server kv). Survives
+   the 2s auto-refresh re-renders because hoursHTML reads it every time. */
+function periodKey(name){ return 'pctx-period-'+curDate+'-'+name; }
+function isPeriodCollapsed(name){
+  try{ return typeof localStorage!=='undefined' &&
+    localStorage.getItem(periodKey(name))==='1'; }catch(e){ return false; }
+}
+function setPeriodCollapsed(name, collapsed){
+  try{ if(typeof localStorage!=='undefined')
+    localStorage.setItem(periodKey(name), collapsed?'1':'0'); }catch(e){}
+}
+function togglePeriod(name){
+  const body = document.getElementById('periodbody-'+name);
+  const head = document.getElementById('period-'+name);
+  if(!body || !head) return;
+  const collapsed = body.classList.toggle('collapsed');
+  head.setAttribute('aria-expanded', String(!collapsed));
+  const chev = head.querySelector('.chev');
+  if(chev) chev.textContent = collapsed ? '▸' : '▾';
+  setPeriodCollapsed(name, collapsed);
+}
 function hoursHTML(tl, viewingToday){
   const chrono = tl.slice().reverse();  // API is newest-first
   const durs = entryDurations(chrono, viewingToday);
   const durOf = e => durs[chrono.indexOf(e)];
   // Periods read morning-to-night like a journal; entries WITHIN each
   // period read newest-first, so the latest activity is always on top
-  // and live updates never push it below the fold.
-  return groupByPeriod(chrono).map(g =>
-    '<div class="period" id="period-'+g.name+'">'+g.name+'</div>'+
-    g.items.slice().reverse().map(e => hourEntryHTML(e, durOf(e))).join('')
-  ).join('');
+  // and live updates never push it below the fold. Each period header
+  // is a keyboard-accessible toggle that collapses its entries.
+  return groupByPeriod(chrono).map(g => {
+    const collapsed = isPeriodCollapsed(g.name);
+    // data-p carries the period name (event delegation below) — avoids
+    // nested-quote escaping bugs in inline onclick handlers.
+    return '<div class="periodwrap" id="periodwrap-'+g.name+'">'+
+      '<button class="periodhead" id="period-'+g.name+'" aria-expanded="'+
+      (!collapsed)+'" data-p="'+g.name+'">'+
+      '<span class="chev">'+(collapsed?'▸':'▾')+'</span>'+
+      '<span>'+g.name+'</span></button>'+
+      '<div class="periodbody'+(collapsed?' collapsed':'')+'" id="periodbody-'+g.name+'">'+
+      g.items.slice().reverse().map(e => hourEntryHTML(e, durOf(e))).join('')+
+      '</div></div>';
+  }).join('');
 }
 /* One-time smooth scroll to the current time period on initial load.
    Never fires on auto-refresh ticks, and never when viewing a past date. */
 let firstLoad = true;
 function scrollToNow(){
   if(curDate !== todayISO()) return;
-  const el = document.getElementById('period-'+periodName(new Date().getHours()));
+  const name = periodName(new Date().getHours());
+  // Never fight collapsed state: expand the current period first so the
+  // scroll target is visible.
+  if(isPeriodCollapsed(name)){
+    setPeriodCollapsed(name, false);
+    const body = document.getElementById('periodbody-'+name);
+    const head = document.getElementById('period-'+name);
+    if(body) body.classList.remove('collapsed');
+    if(head){ head.setAttribute('aria-expanded','true');
+      const c = head.querySelector('.chev'); if(c) c.textContent = '▾'; }
+  }
+  const el = document.getElementById('period-'+name);
   if(el && el.scrollIntoView) el.scrollIntoView({behavior:'smooth', block:'start'});
 }
 /* ---- Journal / Notes tabs ---- */
@@ -424,6 +483,11 @@ function applyTheme(t){
   document.getElementById('themeDiary').classList.toggle('on', t==='diary');
   // Accent dots belong to diary mode only — journal stays monotone.
   document.getElementById('accentDots').style.display = (t==='diary') ? '' : 'none';
+  // Theme-aware labels: diary mode reads "Diary | Notes" and "A Local Diary".
+  const diary = (t === 'diary');
+  document.getElementById('tabJournal').textContent = diary ? 'Diary' : 'Journal';
+  document.getElementById('eyebrow').innerHTML =
+    'PrivateContext &middot; A Local ' + (diary ? 'Diary' : 'Journal');
 }
 async function setTheme(t){
   try{
@@ -583,6 +647,10 @@ document.addEventListener('click', e=>{
   const p = document.getElementById('picker');
   if(p.style.display !== 'none' && !p.contains(e.target) &&
      e.target.id !== 'stickerBtn' && e.target.id !== 'stickerBig') p.style.display = 'none';
+  // "The hours" period toggles (event delegation — the timeline is
+  // re-rendered every 2s, so inline handlers would rot).
+  const head = e.target.closest ? e.target.closest('.periodhead') : null;
+  if(head && head.dataset.p) togglePeriod(head.dataset.p);
 });
 loadTheme();
 loadAccent();
@@ -662,14 +730,20 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         u = urlparse(self.path)
         if u.path == "/":
-            # Server-rendered theme + accent: first paint is already correct,
-            # no flash.
+            # Server-rendered theme + accent + labels: first paint is
+            # already correct, no flash.
             theme = self._with_db(lambda db: get_theme(db))
             accent = self._with_db(lambda db: get_accent(db))
             body = PAGE.replace(
                 "<body>",
                 f'<body data-theme="{theme}" data-accent="{accent}">',
-                1).encode()
+                1)
+            if theme == "diary":
+                body = body.replace("A Local Journal", "A Local Diary")
+                body = body.replace(
+                    "onclick=\"showTab('journal')\">Journal</button>",
+                    "onclick=\"showTab('journal')\">Diary</button>", 1)
+            body = body.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
