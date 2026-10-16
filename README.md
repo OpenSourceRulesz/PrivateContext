@@ -70,7 +70,7 @@ background, serif type, one deep-teal accent — and zero external
 assets. No webfonts, no CDN; the page loads nothing from the network,
 because local-first means the rendering is local too. Top to bottom:
 a masthead with the date set large ("Thursday, October 15"),
-"Today's entry" (the Ollama recap as prose, with a drop cap),
+"Today's summary" (the Ollama recap as prose, with a drop cap),
 "Where the day went" (app-usage bars), "Marginalia" (#tags),
 and "The hours" (the timeline grouped into Morning / Afternoon /
 Evening / Night, each entry with its duration in the margin).
@@ -130,14 +130,14 @@ as-is.
 ## Day recap card
 
 When the nightly summarizer has written a recap, it becomes "Today's
-entry" at the top of the journal — today's if present, otherwise
+summary" at the top of the journal — today's if present, otherwise
 yesterday's, labeled as such. No summary yet → a quiet placeholder
-("Tonight's entry hasn't been written yet."), no nagging.
+("Tonight's summary hasn't been written yet."), no nagging.
 
-Two quiet controls sit beside the entry heading. **↻ Regenerate**
-asks the local model to write the entry again in the background —
+Two quiet controls sit beside the summary heading. **↻ Regenerate**
+asks the local model to write the summary again in the background —
 the page polls until the new text lands (a failed run never deletes
-the old entry). **Remove** deletes the entry after a confirm; you can
+the old summary). **Remove** deletes the summary after a confirm; you can
 always regenerate it later. Users make mistakes; journals have
 erasers.
 
@@ -147,7 +147,7 @@ Every day's page has a **Notes** tab next to **Journal**: a big
 textarea for meeting notes, ideas, anything worth remembering.
 Saves in place (Ctrl+S works), no page reload. Notes are the highest
 signal in the product — `pctx summarize` weaves "My notes today:"
-into the digest, so the nightly entry reflects what the day *meant*,
+into the digest, so the nightly summary reflects what the day *meant*,
 not just what happened. Like everything else, notes never leave the
 machine; `pctx purge` deliberately leaves them alone.
 
@@ -164,8 +164,12 @@ sticker sits beside the date from then on.
 The journal skin (monotone paper, deep-teal accent) is the default.
 **Diary** is its playful sibling: same page, candy accents, warmer
 paper, rounder shapes — implemented as pure CSS variable overrides,
-zero new assets. Toggle it in the masthead; the choice is stored
-server-side, so first paint is already correct. Journal is for the
+zero new assets. Toggle it in the top-right corner (where dark/light
+modes usually live); on narrow screens it drops below the masthead.
+The choice is stored server-side, so first paint is already correct.
+In Diary mode a row of color dots appears beside the toggle —
+raspberry, ocean, forest, plum, tangerine. Journal stays monotone;
+that's its identity. Journal is for the
 professional; Diary is for the kid who still wants the gold star.
 
 ## Importing your history

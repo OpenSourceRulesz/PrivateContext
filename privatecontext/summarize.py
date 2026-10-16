@@ -191,7 +191,7 @@ PROMPT_TEMPLATE = """You are the user's private journal. Write today's journal e
 Rules:
 - Write in FIRST PERSON, past tense — these are the user's own words ("I spent the morning…", never "the user spent…").
 - 3 to 6 bullets. Each bullet covers something DIFFERENT — never mention the same app or project twice.
-- Name apps, files, ticket IDs, and rough times taken straight from the digest.
+- Name apps, files, ticket IDs, and the EXACT durations printed in the digest (e.g. 0.85h, 27m) — never round them to whole hours, never invent times.
 - Report ONLY what the digest shows. Never write "likely", "probably", or "some time", and never invent a purpose for an activity.
 - If the digest has a "My notes today:" section, weave what the user wrote into the entry — their words outrank the aggregates.
 - End with exactly one line starting with TAGS: followed by comma-separated tags (project/repo names, app names, ticket-like tokens such as INC0123456).
@@ -208,8 +208,8 @@ My notes today:
 Testing the Windows build; the Ollama install fought the proxy all afternoon.
 
 Entry:
-- I spent the morning in Edge on the Kuali ServiceNow portal, about 2h on tickets.
-- I put 1.5h into the PrivateContext Windows build in VS Code, working on the new dashboard.
+- I spent the morning in Edge on the Kuali ServiceNow portal, 2.00h on tickets.
+- I put 1.50h into the PrivateContext Windows build in VS Code, working on the new dashboard.
 - My notes: testing the Windows build; the Ollama install fought the proxy all afternoon.
 TAGS: kuali, servicenow, privatecontext, edge, vs code
 
@@ -225,7 +225,7 @@ WEEK_PROMPT_TEMPLATE = """You are the user's private journal. Write the week's j
 Rules:
 - Write in FIRST PERSON, past tense — these are the user's own words ("I spent the week…", never "the user spent…").
 - 5 to 10 bullets. Each bullet covers something DIFFERENT — never mention the same app or project twice.
-- Name apps, files, ticket IDs, and rough times taken straight from the digests. Call out trends, unusually heavy or light days, and recurring themes.
+- Name apps, files, ticket IDs, and the EXACT durations printed in the digests (e.g. 4.10h, 27m) — never round them to whole hours, never invent times. Call out trends, unusually heavy or light days, and recurring themes.
 - Report ONLY what the digests show. Never write "likely", "probably", or "some time", and never invent a purpose for an activity.
 - If a day has a "My notes" section, weave what the user wrote into the entry — their words outrank the aggregates.
 - End with exactly one line starting with TAGS: followed by comma-separated tags (project/repo names, app names, ticket-like tokens such as INC0123456).
@@ -245,8 +245,8 @@ Top windows by time:
    4.2h  VS Code              tiny-jepa - train.py
 
 Entry:
-- I spent Monday buried in Edge on the Kuali ServiceNow portal, over 4h of ticket work.
-- Tuesday belonged to VS Code and tiny-jepa training runs, a solid 5h block.
+- I spent Monday buried in Edge on the Kuali ServiceNow portal, 4.10h of ticket work.
+- Tuesday belonged to VS Code and tiny-jepa training runs, a solid 5.00h block.
 - The week tilted from support work toward deep project time as it went on.
 TAGS: kuali, servicenow, tiny-jepa, edge, vs code
 

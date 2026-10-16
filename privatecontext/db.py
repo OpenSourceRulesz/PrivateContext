@@ -403,6 +403,37 @@ def set_theme(con: sqlite3.Connection, theme: str) -> str:
     return theme
 
 
+# ---------------------------------------------------------------------------
+# diary accent (color choice, diary mode only — journal stays monotone)
+# ---------------------------------------------------------------------------
+
+ACCENT_KEY = "accent"
+# name -> hex. Journal never reads these; monotone is its identity.
+ACCENTS = {
+    "raspberry": "#d6457b",  # default
+    "ocean": "#2563eb",
+    "forest": "#16a34a",
+    "plum": "#9333ea",
+    "tangerine": "#ea580c",
+}
+
+
+def get_accent(con: sqlite3.Connection) -> str:
+    """Diary accent color name. Defaults to 'raspberry'; unknown stored
+    values fall back rather than breaking the page."""
+    v = kv_get(con, ACCENT_KEY, "raspberry")
+    return v if v in ACCENTS else "raspberry"
+
+
+def set_accent(con: sqlite3.Connection, accent: str) -> str:
+    """Persist the diary accent. Raises ValueError on unknown names."""
+    if accent not in ACCENTS:
+        raise ValueError(f"unknown accent: {accent!r} (choose: "
+                         + ", ".join(ACCENTS))
+    kv_set(con, ACCENT_KEY, accent)
+    return accent
+
+
 def remove_day_entry(con: sqlite3.Connection, date_str: str) -> bool:
     """Delete one day's summary row (exact date match — `week:` keys are
     never touched). Returns True when a row was actually removed."""

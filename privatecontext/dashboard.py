@@ -4,7 +4,7 @@ A paper journal, not a control panel: warm paper background, serif type,
 one accent color, zero external assets (no webfonts, no CDN — local-first
 means the page loads nothing from the network). The page polls the same
 JSON APIs every 2 seconds while viewing today — live updates without
-WebSockets. Views: the day's entry (Ollama recap as prose, with quiet
+WebSockets. Views: the day's summary (Ollama recap as prose, with quiet
 regenerate/remove controls), where the day went (app-usage bars),
 marginalia (#tags), the hours (timeline grouped by part of day), a Notes
 tab for handwritten per-day notes (which feed into summaries), manual
@@ -23,9 +23,10 @@ from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from .db import (app_usage, connect, day_recap, default_db_path, get_note,
-                 get_sticker, get_theme, init_db, remove_day_entry, search,
-                 set_note, set_sticker, set_theme, tag_usage, timeline)
+from .db import (app_usage, connect, day_recap, default_db_path, get_accent,
+                 get_note, get_sticker, get_theme, init_db, remove_day_entry,
+                 search, set_accent, set_note, set_sticker, set_theme,
+                 tag_usage, timeline)
 from .summarize import (DEFAULT_MODEL, ollama_hint, ollama_reachable,
                         summarize_day)
 
@@ -50,9 +51,24 @@ body[data-theme="diary"]{
   --faint:#dcc39a; --sepline:#e3cda6; --placeholder:#c09a72;
   --purge:#c4a075; --purge-hi:#9a6f45; --radius:14px;
 }
+/* Diary punch-up: accent-colored eyebrow and section rules so it reads
+   visibly more playful than the monotone journal. */
+body[data-theme="diary"] .eyebrow{color:var(--accent)}
+body[data-theme="diary"] h2.sec{border-bottom:2px solid var(--accent)}
+/* Diary accent picker: raspberry is the base above; the other four
+   accents override it. Journal never reads data-accent — monotone is
+   its identity. */
+body[data-theme="diary"][data-accent="ocean"]{
+  --accent:#2563eb;--accent-hi:#1d4ed8;--accent-ink:#1e40af;--chipbg:#e4edfd;}
+body[data-theme="diary"][data-accent="forest"]{
+  --accent:#16a34a;--accent-hi:#12853c;--accent-ink:#166534;--chipbg:#e3f4e9;}
+body[data-theme="diary"][data-accent="plum"]{
+  --accent:#9333ea;--accent-hi:#7d2bd6;--accent-ink:#6b21a8;--chipbg:#f1e5fd;}
+body[data-theme="diary"][data-accent="tangerine"]{
+  --accent:#ea580c;--accent-hi:#cf4e0a;--accent-ink:#c2410c;--chipbg:#fdeee1;}
 body{font-family:Georgia,'Times New Roman',serif;background:var(--paper);color:var(--ink);
      margin:0;line-height:1.65}
-.page{max-width:720px;margin:0 auto;padding:56px 30px 90px}
+.page{max-width:720px;margin:0 auto;padding:56px 30px 90px;position:relative}
 .eyebrow{text-align:center;font-size:11px;letter-spacing:4px;text-transform:uppercase;color:var(--muted)}
 h1.dateline{text-align:center;font-weight:400;font-size:3.1em;margin:14px 0 2px;line-height:1.15}
 #stickerBig{font-size:0.72em;vertical-align:baseline;margin-left:12px;cursor:pointer}
@@ -72,12 +88,17 @@ h1.dateline{text-align:center;font-weight:400;font-size:3.1em;margin:14px 0 2px;
      font-size:1.7em;padding:6px 10px;cursor:pointer;line-height:1.2}
 .picker button:hover{border-color:var(--accent)}
 .picker button.clear{font-size:0.85em;font-family:inherit;color:var(--muted);padding:6px 12px}
-.themerow{text-align:center;margin:12px 0 0;font-size:0.92em;color:var(--muted)}
+.themerow{position:absolute;top:20px;right:26px;margin:0;font-size:0.92em;
+     color:var(--muted);text-align:right}
 .themerow button{background:none;border:none;font-family:inherit;font-size:1em;
      color:var(--muted);cursor:pointer;padding:4px 8px}
 .themerow button.on{color:var(--accent);font-weight:700}
 .themerow button:hover{color:var(--accent)}
 .themerow .sep{color:var(--sepline)}
+.themerow .accentdots{margin-left:10px;white-space:nowrap}
+.themerow .accentdots button{width:15px;height:15px;border-radius:50%;border:none;
+     padding:0;margin:0 3px;cursor:pointer;vertical-align:-1px}
+.themerow .accentdots button.on{outline:2px solid var(--ink);outline-offset:2px}
 .tabs{display:flex;justify-content:center;gap:6px;margin:20px 0 0}
 .tabs button{background:none;border:none;font-family:inherit;font-size:1.05em;
      color:var(--muted);cursor:pointer;padding:8px 20px;border-bottom:2px solid transparent}
@@ -142,6 +163,7 @@ footer .purgebtn:hover{color:var(--purge-hi)}
 code{font-family:ui-monospace,SFMono-Regular,monospace;font-size:0.9em}
 @media (max-width:560px){
   .page{padding:36px 18px 70px}
+  .themerow{position:static;text-align:center;margin:14px 0 0}
   h1.dateline{font-size:2.2em}
   .bar .al{width:118px}
   .hour-ev .t{width:64px}
@@ -162,7 +184,7 @@ code{font-family:ui-monospace,SFMono-Regular,monospace;font-size:0.9em}
 </nav>
 <div class="stickrow"><button id="stickerBtn" class="stickerbtn" onclick="togglePicker(event)">&#10022; mark this day</button>
 <div id="picker" class="picker" style="display:none"></div></div>
-<div class="themerow"><button id="themeJournal" onclick="setTheme('journal')">Journal</button><span class="sep"> &middot; </span><button id="themeDiary" onclick="setTheme('diary')">Diary</button></div>
+<div class="themerow"><button id="themeJournal" onclick="setTheme('journal')">Journal</button><span class="sep"> &middot; </span><button id="themeDiary" onclick="setTheme('diary')">Diary</button><span id="accentDots" class="accentdots" style="display:none"><!-- one row of dots covers the need; a Settings tab earns its place at 3+ settings --><button data-a="raspberry" style="background:#d6457b" title="raspberry" onclick="setAccent('raspberry')"></button><button data-a="ocean" style="background:#2563eb" title="ocean" onclick="setAccent('ocean')"></button><button data-a="forest" style="background:#16a34a" title="forest" onclick="setAccent('forest')"></button><button data-a="plum" style="background:#9333ea" title="plum" onclick="setAccent('plum')"></button><button data-a="tangerine" style="background:#ea580c" title="tangerine" onclick="setAccent('tangerine')"></button></span></div>
 <nav class="tabs">
 <button id="tabJournal" class="on" onclick="showTab('journal')">Journal</button>
 <button id="tabNotes" onclick="showTab('notes')">Notes</button>
@@ -176,7 +198,7 @@ code{font-family:ui-monospace,SFMono-Regular,monospace;font-size:0.9em}
 <div id="emptyDay" class="gentle" style="display:none">Nothing recorded this day.</div>
 <div id="journalTab">
 <section id="entrySec">
-<h2 class="sec"><span id="entryH">Today&rsquo;s entry</span><span class="entryctl"><button id="regenBtn" onclick="regenEntry()" title="Ask the local model to write this entry again">&#8635; regenerate</button><button class="danger" onclick="removeEntry()" title="Delete this entry">remove</button></span></h2>
+<h2 class="sec"><span id="entryH">Today&rsquo;s summary</span><span class="entryctl"><button id="regenBtn" onclick="regenEntry()" title="Ask the local model to write this summary again">&#8635; regenerate</button><button class="danger" onclick="removeEntry()" title="Delete this summary">remove</button></span></h2>
 <div id="entry" class="entry"></div>
 </section>
 <section id="usageSec">
@@ -276,8 +298,8 @@ function entryHTML(r){
     return html;
   }
   const ph = (curDate === todayISO())
-    ? "Tonight's entry hasn't been written yet. Run <code>pctx summarize</code>."
-    : 'No entry was written for this day.';
+    ? "Tonight's summary hasn't been written yet. Run <code>pctx summarize</code>."
+    : 'No summary was written for this day.';
   return '<p class="placeholder">'+ph+'</p>';
 }
 function bars(pairs){
@@ -400,6 +422,8 @@ function applyTheme(t){
   document.body.dataset.theme = t;  // server also renders it; no first-paint flash
   document.getElementById('themeJournal').classList.toggle('on', t==='journal');
   document.getElementById('themeDiary').classList.toggle('on', t==='diary');
+  // Accent dots belong to diary mode only — journal stays monotone.
+  document.getElementById('accentDots').style.display = (t==='diary') ? '' : 'none';
 }
 async function setTheme(t){
   try{
@@ -408,11 +432,33 @@ async function setTheme(t){
     applyTheme(r.theme);
   }catch(e){ alert('error: '+e); }
 }
+/* ---- Diary accent: raspberry (default), ocean, forest, plum, tangerine ----
+   Server-rendered via data-accent on first paint, like data-theme. */
+let curAccent = 'raspberry';
+async function loadAccent(){
+  try{
+    const r = await j('/api/accent');
+    applyAccent(r.accent || 'raspberry');
+  }catch(e){}
+}
+function applyAccent(a){
+  curAccent = a;
+  document.body.dataset.accent = a;
+  document.querySelectorAll('#accentDots button').forEach(
+    b => b.classList.toggle('on', b.dataset.a === a));
+}
+async function setAccent(a){
+  try{
+    const r = await j('/api/accent', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({accent:a})});
+    applyAccent(r.accent);
+  }catch(e){ alert('error: '+e); }
+}
 /* ---- Entry controls: regenerate / remove ----
    UI contract for regeneration: POST starts a background summarize and
    returns immediately; poll /api/recap?date= every 3s until the summary
    TEXT differs from what was shown (or 120s elapse → error). A failed
-   regeneration never deletes the existing entry — summarize_day only
+   regeneration never deletes the existing summary — summarize_day only
    writes to the days table on success. */
 let regenTimer = null;
 async function regenEntry(){
@@ -422,7 +468,7 @@ async function regenEntry(){
   }catch(e){ alert('error: '+e); return; }
   const before = document.getElementById('entry').dataset.summary || '';
   document.getElementById('entry').innerHTML =
-    '<p class="writing">Writing today\u2019s entry\u2026</p>';
+    '<p class="writing">Writing today\u2019s summary\u2026</p>';
   const t0 = Date.now();
   if(regenTimer) clearInterval(regenTimer);
   regenTimer = setInterval(async ()=>{
@@ -436,13 +482,13 @@ async function regenEntry(){
       } else if(Date.now()-t0 > 120000){
         clearInterval(regenTimer); regenTimer = null;
         document.getElementById('entry').innerHTML =
-          '<p class="placeholder">Regeneration timed out \u2014 the previous entry was kept. Try again.</p>';
+          '<p class="placeholder">Regeneration timed out \u2014 the previous summary was kept. Try again.</p>';
       }
     }catch(e){}
   }, 3000);
 }
 async function removeEntry(){
-  if(!confirm("Delete today's entry? You can regenerate it later.")) return;
+  if(!confirm("Delete today's summary? You can regenerate it later.")) return;
   try{
     await j('/api/entry/remove?date='+curDate, {method:'POST'});
     document.getElementById('entry').dataset.summary = '';
@@ -455,13 +501,13 @@ function renderMasthead(){
     d.toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric'});
   document.getElementById('yearLine').textContent = d.getFullYear();
   document.getElementById('entryH').textContent =
-    (curDate === todayISO()) ? "Today\u2019s entry" : 'The entry';
+    (curDate === todayISO()) ? "Today\u2019s summary" : 'The summary';
   document.title = 'PrivateContext \u00b7 ' +
     d.toLocaleDateString('en-US', {month:'long', day:'numeric', year:'numeric'});
 }
 async function loadEntry(){
   try{
-    // Viewing today: server falls back to yesterday's entry. A picked
+    // Viewing today: server falls back to yesterday's summary. A picked
     // past date shows exactly that date's summary, no fallback.
     const url = (curDate === todayISO()) ? '/api/recap' : '/api/recap?date='+curDate;
     const r = await j(url);
@@ -539,6 +585,7 @@ document.addEventListener('click', e=>{
      e.target.id !== 'stickerBtn' && e.target.id !== 'stickerBig') p.style.display = 'none';
 });
 loadTheme();
+loadAccent();
 setDate(todayISO());
 </script>
 </body></html>
@@ -561,10 +608,10 @@ def _date_or_today(qs: dict) -> str:
 
 
 def _regen_entry(db_path: str, date_str: str) -> None:
-    """Background entry regeneration. Opens its OWN sqlite connection —
+    """Background summary regeneration. Opens its OWN sqlite connection —
     connections are never shared across threads. summarize_day only
     writes to the days table on success, so a failure (Ollama down,
-    timeout, crash) can never delete the existing entry."""
+    timeout, crash) can never delete the existing summary."""
     try:
         summarize_day(db_path, date_str, DEFAULT_MODEL)
     except Exception:
@@ -615,10 +662,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         u = urlparse(self.path)
         if u.path == "/":
-            # Server-rendered theme: first paint is already correct, no flash.
+            # Server-rendered theme + accent: first paint is already correct,
+            # no flash.
             theme = self._with_db(lambda db: get_theme(db))
-            body = PAGE.replace("<body>", f'<body data-theme="{theme}">',
-                                1).encode()
+            accent = self._with_db(lambda db: get_accent(db))
+            body = PAGE.replace(
+                "<body>",
+                f'<body data-theme="{theme}" data-accent="{accent}">',
+                1).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -661,6 +712,8 @@ class Handler(BaseHTTPRequestHandler):
                 lambda db: {"sticker": get_sticker(db, d)}))
         elif u.path == "/api/theme":
             self._json(self._with_db(lambda db: {"theme": get_theme(db)}))
+        elif u.path == "/api/accent":
+            self._json(self._with_db(lambda db: {"accent": get_accent(db)}))
         else:
             self._json({"error": "not found"}, 404)
 
@@ -677,7 +730,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self._with_db(_purge))
             return
         if path not in ("/api/notes", "/api/sticker", "/api/theme",
-                        "/api/entry/regenerate", "/api/entry/remove"):
+                        "/api/accent", "/api/entry/regenerate",
+                        "/api/entry/remove"):
             self._json({"error": "not found"}, 404)
             return
         try:
@@ -712,6 +766,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": str(e)}, 400)
                 return
             self._json({"theme": t})
+        elif path == "/api/accent":
+            try:
+                a = self._with_db(
+                    lambda db: set_accent(db, data.get("accent")))
+            except ValueError as e:
+                self._json({"error": str(e)}, 400)
+                return
+            self._json({"accent": a})
         elif path == "/api/entry/remove":
             removed = self._with_db(lambda db: remove_day_entry(db, d))
             self._json({"removed": removed})
