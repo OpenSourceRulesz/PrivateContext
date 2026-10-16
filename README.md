@@ -77,6 +77,9 @@ Evening / Night, each entry with its duration in the margin; click a
 period header to collapse it — the choice is remembered per day).
 Flip pages with ← Yesterday · Today · Tomorrow → — every section
 follows the date. Auto-refresh only runs while you're viewing today.
+Tomorrow is a planning page: it opens on the Notes tab so you can jot
+down plans for the day ahead (`pctx summarize` refuses future dates —
+there's nothing to recap yet).
 
 Export a shareable copy (screenshots excluded):
 

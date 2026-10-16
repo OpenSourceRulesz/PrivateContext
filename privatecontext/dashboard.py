@@ -96,7 +96,10 @@ h1.dateline{text-align:center;font-weight:400;font-size:3.1em;margin:14px 0 2px;
      font-size:1.7em;padding:6px 10px;cursor:pointer;line-height:1.2}
 .picker button:hover{border-color:var(--accent)}
 .picker button.clear{font-size:0.85em;font-family:inherit;color:var(--muted);padding:6px 12px}
-.themerow{position:absolute;top:20px;right:26px;margin:0;font-size:0.92em;
+/* Pinned to the viewport's true top-right corner (not the centered
+   column), like a conventional theme toggle. Falls back to static flow
+   below the masthead on narrow screens. */
+.themerow{position:fixed;top:20px;right:26px;z-index:50;margin:0;font-size:0.92em;
      color:var(--muted);text-align:right}
 .themerow button{background:none;border:none;font-family:inherit;font-size:1em;
      color:var(--muted);cursor:pointer;padding:4px 8px}
@@ -313,7 +316,10 @@ function entryHTML(r){
     }
     return html;
   }
-  const ph = (curDate === todayISO())
+  const future = curDate > todayISO();
+  const ph = future
+    ? "This day hasn\u2019t happened yet \u2014 leave a note with your plans."
+    : (curDate === todayISO())
     ? "Tonight's summary hasn't been written yet. Run <code>pctx summarize</code>."
     : 'No summary was written for this day.';
   return '<p class="placeholder">'+ph+'</p>';
@@ -608,12 +614,14 @@ async function refresh(){
     document.getElementById('colophon').textContent = 'error: '+e;
   }
 }
+/* Future dates are planning pages, not dead ends: the Tomorrow button
+   is always enabled, and future dates open on the Notes tab (there's
+   no activity to show yet). Notes are fully writable for future dates. */
 function setDate(d){
-  if(d > todayISO()) d = todayISO();  // no peeking into the future
   curDate = d;
-  document.getElementById('nextD').disabled = (d >= todayISO());
   if(timer){ clearInterval(timer); timer = null; }
   if(d === todayISO()){ timer = setInterval(refresh, 2000); }
+  if(d > todayISO()) showTab('notes');
   loadSticker();
   if(document.getElementById('notesTab').style.display !== 'none') loadNote();
   refresh();
@@ -852,6 +860,11 @@ class Handler(BaseHTTPRequestHandler):
             removed = self._with_db(lambda db: remove_day_entry(db, d))
             self._json({"removed": removed})
         elif path == "/api/entry/regenerate":
+            # Future dates are planning pages — nothing to summarize yet.
+            if d > date.today().isoformat():
+                self._json({"error": "can't summarize a day that hasn't "
+                                     "happened yet"}, 400)
+                return
             # Fast pre-flight so a dead Ollama returns the hint, not a hang.
             if not ollama_reachable():
                 self._json({"error": ollama_hint()}, 503)

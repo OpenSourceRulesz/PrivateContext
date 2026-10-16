@@ -410,6 +410,11 @@ def summarize_day(db_path: str | None, date_str: str, model: str,
     except ValueError:
         print(f"bad date '{date_str}' — use YYYY-MM-DD", file=sys.stderr)
         return 2
+    # Future dates are planning pages — there is nothing to summarize yet.
+    if date_str > date.today().isoformat():
+        print("can't summarize a day that hasn't happened yet",
+              file=sys.stderr)
+        return 2
     con = connect(db_path)
     init_db(con)  # no-op if capture already created the schema
     digest, stats = build_day_digest(con, date_str)
