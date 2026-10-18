@@ -160,12 +160,28 @@ def timeline(con: sqlite3.Connection, limit: int = 200,
     return collapse_clicks([dict(r) for r in rows])
 
 
+# Lock-screen / login pseudo-apps. They arrive as ordinary 'window'
+# events (Windows: LockApp.exe -> "Lockapp"), but they are absence, not
+# activity: the dashboard keeps them out of the ranked per-app bars and
+# shows them as one honest "Away" line instead. Matched case-insensitively.
+AWAY_APPS = frozenset({"lockapp", "logonui"})
+
+
+def is_away_app(app: str | None) -> bool:
+    """True for lock-screen pseudo-apps — absence, not activity."""
+    return (app or "").strip().lower() in AWAY_APPS
+
+
 def app_usage(con: sqlite3.Connection, cap_s: float = 600,
-              date_str: str | None = None) -> list[tuple[str, float]]:
+              date_str: str | None = None,
+              exclude_away: bool = False) -> list[tuple[str, float]]:
     """Seconds per app for one day (default: today). Each window event owns
     time until the next event, capped so a forgotten window doesn't claim
     the whole afternoon. For past days the last event owns time until
-    midnight, not until now."""
+    midnight, not until now. With exclude_away, lock-screen pseudo-apps
+    are skipped in the tally (their spans still bound the previous app's
+    ownership, so nobody gets credit for the locked hour — see
+    away_usage for the honest total)."""
     if date_str:
         start, end = day_range(date_str)
     else:
@@ -181,8 +197,58 @@ def app_usage(con: sqlite3.Connection, cap_s: float = 600,
         nxt = rows[i + 1]["ts"] if i + 1 < len(rows) else end
         dur = min(max(0.0, nxt - r["ts"]), cap_s)
         app = r["app"] or "unknown"
+        if exclude_away and is_away_app(app):
+            continue
         usage[app] = usage.get(app, 0.0) + dur
     return sorted(usage.items(), key=lambda kv: -kv[1])
+
+
+def away_usage(con: sqlite3.Connection, cap_s: float = 600,
+               date_str: str | None = None) -> float:
+    """Seconds the user was away on a day: lock-screen window time plus
+    AFK idle spans ('back' events carry the idle length in duration_ms),
+    merged so a lock-during-idle counts once. Mirrors the window-ownership
+    capping in app_usage, and the >= 60s idle threshold the digest uses
+    for real breaks."""
+    if date_str:
+        start, end = day_range(date_str)
+    else:
+        start, _ = today_range()
+        end = time.time()
+    spans: list[tuple[float, float]] = []
+    wins = con.execute(
+        "SELECT ts, app FROM events WHERE type = 'window'"
+        " AND ts >= ? AND ts < ? ORDER BY ts",
+        (start, end),
+    ).fetchall()
+    for i, r in enumerate(wins):
+        if not is_away_app(r["app"]):
+            continue
+        nxt = wins[i + 1]["ts"] if i + 1 < len(wins) else end
+        dur = min(max(0.0, nxt - r["ts"]), cap_s)
+        if dur > 0:
+            spans.append((r["ts"], r["ts"] + dur))
+    for r in con.execute(
+            "SELECT ts, duration_ms FROM events WHERE type = 'back'"
+            " AND ts >= ? AND ts < ?", (start, end)).fetchall():
+        idle_s = (r["duration_ms"] or 0) / 1000.0
+        if idle_s >= 60:
+            spans.append((max(start, r["ts"] - idle_s), r["ts"]))
+    spans.sort()
+    total = 0.0
+    cur_s: float | None = None
+    cur_e = 0.0
+    for s, e in spans:
+        if cur_s is None:
+            cur_s, cur_e = s, e
+        elif s <= cur_e:
+            cur_e = max(cur_e, e)
+        else:
+            total += cur_e - cur_s
+            cur_s, cur_e = s, e
+    if cur_s is not None:
+        total += cur_e - cur_s
+    return total
 
 
 def _fts_query(q: str) -> str:

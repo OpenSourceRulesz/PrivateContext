@@ -41,9 +41,111 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def _fmt_dur_md(secs: float) -> str:
+    secs = round(secs)
+    if secs >= 3600:
+        return f"{secs // 3600}h {round((secs % 3600) / 60)}m"
+    if secs >= 60:
+        return f"{round(secs / 60)}m"
+    return "<1m"
+
+
+def cmd_export_markdown(args: argparse.Namespace) -> int:
+    """One readable .md per day: header, sticker, summary, notes, tags,
+    top apps. Days with no data at all are skipped."""
+    from datetime import datetime as _dt
+    from .db import app_usage, away_usage, get_note, get_sticker
+
+    def _parse(s: str | None, name: str):
+        if s is None:
+            return None
+        try:
+            return _dt.strptime(s, "%Y-%m-%d").date()
+        except ValueError:
+            print(f"bad --{name} '{s}' — use YYYY-MM-DD", file=sys.stderr)
+            return False
+
+    lo = _parse(args.from_date, "from")
+    hi = _parse(args.to_date, "to")
+    if lo is False or hi is False:
+        return 2
+    db = _resolve_db(args.db) if args.db else default_db_path()
+    if not Path(db).exists():
+        print(f"no database at {db} — run `pctx capture` first",
+              file=sys.stderr)
+        return 1
+    con = connect(db)
+    init_db(con)
+    ev_dates = {r[0] for r in con.execute(
+        "SELECT DISTINCT date(datetime(ts, 'unixepoch', 'localtime'))"
+        " FROM events")}
+    all_dates = (ev_dates
+                 | {r["date"] for r in con.execute(
+                     "SELECT date FROM days WHERE date NOT LIKE 'week:%'")}
+                 | {r["date"] for r in con.execute("SELECT date FROM notes")}
+                 | {r["date"] for r in con.execute("SELECT date FROM day_marks")})
+    if not all_dates:
+        print("[privatecontext] nothing to export — no data yet.",
+              file=sys.stderr)
+        return 1
+    lo = lo or min(all_dates)
+    hi = hi or max(all_dates)
+    if lo > hi:
+        print(f"bad range: --from {lo} is after --to {hi}", file=sys.stderr)
+        return 2
+    out_dir = Path(os.path.abspath(
+        args.out or "./privatecontext-export/"))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for ds in sorted(all_dates):
+        if not (str(lo) <= ds <= str(hi)):
+            continue
+        d = _dt.strptime(ds, "%Y-%m-%d").date()
+        sticker = get_sticker(con, ds)
+        note = get_note(con, ds)
+        srow = con.execute("SELECT summary, tags FROM days WHERE date = ?",
+                           (ds,)).fetchone()
+        summary = (srow["summary"] or "").strip() if srow else ""
+        tags = (srow["tags"] or "").strip() if srow else ""
+        n_events = con.execute(
+            "SELECT COUNT(*) FROM events WHERE"
+            " date(datetime(ts, 'unixepoch', 'localtime')) = ?",
+            (ds,)).fetchone()[0]
+        if not (n_events or summary or note or sticker):
+            continue  # no data at all — skip the day
+        # Cross-platform unpadded day ("October 16", not "October 05").
+        parts = [f"# {d.strftime('%A, %B')} {d.day}, {d.year}"]
+        if sticker:
+            parts.append(f"\n{sticker}\n")
+        if summary:
+            parts.append(f"## Summary\n\n{summary}\n")
+        if note:
+            parts.append(f"## Notes\n\n{note}\n")
+        if tags:
+            parts.append("Tags: " + ", ".join(f"#{t.strip()}"
+                                             for t in tags.split(",")
+                                             if t.strip()) + "\n")
+        apps = [(a, s) for a, s in app_usage(con, date_str=ds,
+                                             exclude_away=True)][:8]
+        if apps:
+            lines = [f"- {a} — {_fmt_dur_md(s)}" for a, s in apps]
+            away = away_usage(con, date_str=ds)
+            if away >= 60:
+                lines.append(f"- Away — {_fmt_dur_md(away)}")
+            parts.append("## Where the day went\n\n" + "\n".join(lines) + "\n")
+        (out_dir / f"{ds}.md").write_text("\n".join(parts).strip() + "\n",
+                                          encoding="utf-8")
+        n += 1
+    print(f"[privatecontext] wrote {n} day file(s) -> {out_dir}")
+    return 0
+
+
 def cmd_export(args: argparse.Namespace) -> int:
+    if args.markdown:
+        return cmd_export_markdown(args)
     if not args.scrubbed:
-        print("v0 only supports scrubbed exports: `pctx export --scrubbed`",
+        print("export needs a mode: `pctx export --scrubbed` (database copy)"
+              " or `pctx export --markdown` (readable .md files per day)",
               file=sys.stderr)
         return 2
     src_path = _resolve_db(args.db) if args.db else default_db_path()
@@ -168,7 +270,14 @@ def build_parser() -> argparse.ArgumentParser:
     e = sub.add_parser("export", help="export a shareable copy of the database")
     e.add_argument("--scrubbed", action="store_true",
                    help="exclude screenshots and shot events (required in v0)")
-    e.add_argument("--out", default=None, help="output .db path")
+    e.add_argument("--markdown", action="store_true",
+                   help="write one readable .md per day instead of a .db copy")
+    e.add_argument("--from", dest="from_date", default=None, metavar="DATE",
+                   help="first day YYYY-MM-DD (markdown only)")
+    e.add_argument("--to", dest="to_date", default=None, metavar="DATE",
+                   help="last day YYYY-MM-DD (markdown only)")
+    e.add_argument("--out", default=None,
+                   help="output .db path (--scrubbed) or directory (--markdown)")
     e.set_defaults(func=cmd_export)
 
     s = sub.add_parser("summarize", help="summarize a day (or week) with a local Ollama model")

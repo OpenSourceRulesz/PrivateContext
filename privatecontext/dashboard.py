@@ -16,19 +16,22 @@ paper skin for a colorful one — same HTML, CSS variables only.
 """
 from __future__ import annotations
 
+import html
 import json
+import re
 import sys
 import threading
-from datetime import date
+from calendar import monthrange
+from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from .db import (app_usage, connect, day_recap, default_db_path, get_accent,
-                 get_note, get_sticker, get_theme, init_db, remove_day_entry,
-                 search, set_accent, set_note, set_sticker, set_theme,
-                 tag_usage, timeline)
+from .db import (STICKER_SET, app_usage, away_usage, connect, day_recap,
+                 default_db_path, get_accent, get_note, get_sticker,
+                 get_theme, init_db, remove_day_entry, search, set_accent,
+                 set_note, set_sticker, set_theme, tag_usage, timeline)
 from .summarize import (DEFAULT_MODEL, ollama_hint, ollama_reachable,
-                        summarize_day)
+                        summarize_day, week_monday)
 
 PAGE = """<!doctype html>
 <html><head><meta charset="utf-8">
@@ -87,6 +90,9 @@ h1.dateline{text-align:center;font-weight:400;font-size:3.1em;margin:14px 0 2px;
 .pagenav button:disabled{color:var(--faint);cursor:default}
 .pagenav button:not(:disabled):hover{text-decoration:underline}
 .pagenav .sep{color:var(--sepline)}
+/* The week/month overviews navigate with links, not buttons — same voice. */
+.pagenav a{color:var(--accent);text-decoration:none;font-size:1.02em;padding:6px 10px}
+.pagenav a:hover{text-decoration:underline}
 .stickrow{text-align:center;margin:12px 0 0;min-height:30px}
 .stickerbtn{background:none;border:none;font-family:inherit;font-size:0.92em;
      color:var(--muted);cursor:pointer}
@@ -179,6 +185,12 @@ footer{margin-top:70px;text-align:center;color:var(--muted);font-size:0.95em}
 footer .purgebtn{margin-top:14px;background:none;border:none;font-family:inherit;
      font-size:0.88em;color:var(--purge);cursor:pointer;text-decoration:underline}
 footer .purgebtn:hover{color:var(--purge-hi)}
+/* Quiet footer nav to the week/month overviews — same whisper as purge. */
+.footnav{margin-top:16px;font-size:0.88em;color:var(--muted)}
+.footnav a{color:var(--muted);text-decoration:none}
+.footnav a:hover{color:var(--accent);text-decoration:underline}
+/* Honest away time: muted, never ranked as an app. */
+.awayline{margin:16px 0 4px;color:var(--muted);font-style:italic;font-size:0.95em}
 code{font-family:ui-monospace,SFMono-Regular,monospace;font-size:0.9em}
 @media (max-width:560px){
   .page{padding:36px 18px 70px}
@@ -242,6 +254,7 @@ code{font-family:ui-monospace,SFMono-Regular,monospace;font-size:0.9em}
 </div>
 <footer>
 <div id="colophon"></div>
+<div class="footnav"><a id="weekLink" href="#">week in review</a> &middot; <a id="monthLink" href="#">month</a></div>
 <div><button class="purgebtn" onclick="doPurge()">erase everything</button></div>
 </footer>
 </div>
@@ -333,6 +346,10 @@ function bars(pairs){
 }
 function chips(pairs){
   return pairs.slice(0,20).map(pair=>'<span class="chip">#'+esc(pair[0])+'</span>').join('');
+}
+/* Honest away time: lock/idle is shown, never ranked as an app. */
+function awayHTML(secs){
+  return '<div class="awayline">Away &mdash; '+fmtDurLong(secs)+'</div>';
 }
 function hourEntryHTML(e, dur){
   const idle = (e.duration_ms != null)
@@ -565,6 +582,15 @@ async function removeEntry(){
     refresh();
   }catch(e){ alert('error: '+e); }
 }
+/* ISO week label (YYYY-Www) for the week/month overview links. */
+function isoWeek(dstr){
+  const d = new Date(dstr+'T12:00:00');
+  d.setHours(0,0,0,0);
+  d.setDate(d.getDate()+3-((d.getDay()+6)%7));
+  const w1 = new Date(d.getFullYear(),0,4);
+  const w = 1+Math.round(((d-w1)/864e5-3+((w1.getDay()+6)%7))/7);
+  return d.getFullYear()+'-W'+String(w).padStart(2,'0');
+}
 function renderMasthead(){
   const d = new Date(curDate+'T12:00:00');
   document.getElementById('dowMonth').textContent =
@@ -574,6 +600,8 @@ function renderMasthead(){
     (curDate === todayISO()) ? "Today\u2019s summary" : 'The summary';
   document.title = 'PrivateContext \u00b7 ' +
     d.toLocaleDateString('en-US', {month:'long', day:'numeric', year:'numeric'});
+  document.getElementById('weekLink').href = '/?week='+isoWeek(curDate);
+  document.getElementById('monthLink').href = '/?month='+curDate.slice(0,7);
 }
 async function loadEntry(){
   try{
@@ -597,9 +625,11 @@ async function refresh(){
     const hasEvents = tl.length > 0;
     document.getElementById('timeline').innerHTML =
       hasEvents ? hoursHTML(tl, viewingToday) : '';
-    document.getElementById('usage').innerHTML = bars(u);
+    document.getElementById('usage').innerHTML = bars(u.apps) +
+      ((u.away >= 60) ? awayHTML(u.away) : '');
     document.getElementById('tagusage').innerHTML = chips(t);
-    document.getElementById('usageSec').style.display = u.length ? '' : 'none';
+    document.getElementById('usageSec').style.display =
+      (u.apps.length || u.away >= 60) ? '' : 'none';
     document.getElementById('tagsec').style.display = t.length ? '' : 'none';
     document.getElementById('hoursSec').style.display = hasEvents ? '' : 'none';
     document.getElementById('emptyDay').style.display =
@@ -662,10 +692,245 @@ document.addEventListener('click', e=>{
 });
 loadTheme();
 loadAccent();
-setDate(todayISO());
+(function(){
+  // Day cards (week/month overviews) link here as /?date=YYYY-MM-DD —
+  // honor it on first load instead of always opening today.
+  let d = todayISO();
+  try{
+    const q = new URLSearchParams(location.search).get('date');
+    if(q && /^\\d{4}-\\d{2}-\\d{2}$/.test(q)) d = q;
+  }catch(e){}
+  setDate(d);
+})();
 </script>
 </body></html>
 """
+
+# The week/month overviews are server-rendered read-only pages. They reuse
+# the journal CSS language verbatim (sliced from PAGE so the two can never
+# drift) plus a small page-specific block each. Same HTML/CSS-variable
+# theming, zero new assets.
+JOURNAL_CSS = PAGE.split("<style>", 1)[1].split("</style>", 1)[0]
+
+WEEK_CSS = """
+.daycard{display:block;border:1px solid var(--rule);border-radius:var(--radius);
+  background:var(--card);padding:16px 20px;margin:14px 0;text-decoration:none;color:var(--ink)}
+.daycard:hover{border-color:var(--accent)}
+.daycard .dc-top{display:flex;align-items:baseline;gap:12px}
+.daycard .dc-date{font-size:1.15em}
+.daycard .dc-date b{font-weight:700}
+.daycard .dc-sticker{font-size:1.5em;margin-left:auto}
+.daycard .dc-sum{color:var(--muted2);margin:8px 0;font-size:1.02em}
+.daycard .dc-meta{display:flex;flex-wrap:wrap;gap:10px;align-items:center;
+  font-size:0.92em;color:var(--muted)}
+.daycard .dc-app{color:var(--accent-ink);font-weight:700}
+.daycard .dc-tags{color:var(--muted)}
+.daycard.future{opacity:0.75}
+"""
+
+MONTH_CSS = """
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:7px;margin-top:18px}
+.cal .dow{text-align:center;font-size:0.85em;color:var(--muted);letter-spacing:2px;
+  text-transform:uppercase;padding:6px 0}
+.cal .cell{position:relative;min-height:76px;border:1px solid var(--rule);
+  border-radius:var(--radius);background:var(--card);padding:8px 10px;
+  text-decoration:none;color:var(--ink);display:block}
+.cal .cell:hover{border-color:var(--accent)}
+.cal .cell.empty{background:none;border:none;min-height:0}
+.cal .cell.today{outline:2px solid var(--accent);outline-offset:-2px}
+.cal .cell .num{font-size:1.02em;color:var(--muted2)}
+.cal .cell.today .num{color:var(--accent-ink);font-weight:700}
+.cal .cell .stk{font-size:1.45em;display:block;margin:2px 0}
+.cal .cell .dots{position:absolute;bottom:7px;left:10px;right:10px}
+.cal .cell .dot{display:inline-block;width:7px;height:7px;border-radius:50%;
+  background:var(--faint);margin-right:5px}
+.cal .cell .dot.on{background:var(--accent)}
+.calnav-note{text-align:center;color:var(--muted);margin-top:26px;font-size:0.95em}
+"""
+
+
+def _esc(s: str | None) -> str:
+    return html.escape(s or "")
+
+
+def _theme_attrs(con) -> tuple[str, str]:
+    return get_theme(con), get_accent(con)
+
+
+def _overview_shell(title: str, heading: str, sub: str,
+                    nav_html: str, body_html: str, theme: str,
+                    accent: str, extra_css: str) -> str:
+    """Server-rendered overview page (week/month): journal styling, no JS
+    needed — every day links back to its ?date= day page."""
+    labels = ("A Local Diary", "Diary") if theme == "diary" else ("A Local Journal", "Journal")
+    return (
+        "<!doctype html>\n<html><head><meta charset=\"utf-8\">\n"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n"
+        f"<title>{_esc(title)}</title>\n<style>\n{JOURNAL_CSS}\n{extra_css}\n</style></head>\n"
+        f'<body data-theme="{theme}" data-accent="{accent}">\n'
+        '<div class="page">\n<header>\n'
+        f'<div class="eyebrow">PrivateContext &middot; {labels[0]}</div>\n'
+        f'<h1 class="dateline">{heading}</h1>\n'
+        f'<div class="year">{sub}</div>\n'
+        f'<nav class="pagenav">{nav_html}</nav>\n'
+        "</header>\n" + body_html +
+        '\n<footer>\n<div class="footnav">'
+        '<a href="/">back to today</a></div>\n'
+        '<div style="margin-top:70px;text-align:center;color:var(--muted);font-size:0.95em">'
+        'kept on this machine &middot; nothing uploaded</div>\n</footer>\n'
+        "</div></body></html>"
+    )
+
+
+def _week_param(qs: dict) -> tuple[int, int] | None:
+    """Validated ?week=YYYY-Www -> (iso_year, iso_week). None when absent;
+    raises ValueError on bad format."""
+    vals = qs.get("week", [])
+    if not vals:
+        return None
+    m = re.fullmatch(r"(\d{4})-W(\d{2})", vals[0].strip())
+    if not m:
+        raise ValueError("bad week — use YYYY-Www")
+    y, w = int(m.group(1)), int(m.group(2))
+    date.fromisocalendar(y, w, 1)  # raises ValueError when out of range
+    return y, w
+
+
+def _month_param(qs: dict) -> tuple[int, int] | None:
+    """Validated ?month=YYYY-MM -> (year, month). None when absent;
+    raises ValueError on bad format."""
+    vals = qs.get("month", [])
+    if not vals:
+        return None
+    m = re.fullmatch(r"(\d{4})-(\d{2})", vals[0].strip())
+    if not m:
+        raise ValueError("bad month — use YYYY-MM")
+    y, mo = int(m.group(1)), int(m.group(2))
+    if not 1 <= mo <= 12:
+        raise ValueError("bad month — use YYYY-MM")
+    return y, mo
+
+
+def _week_page(con, year: int, week: int) -> str:
+    monday = date.fromisocalendar(year, week, 1)
+    days = [monday + timedelta(days=i) for i in range(7)]
+    theme, accent = _theme_attrs(con)
+    # The stored weekly summary lives under 'week:YYYY-MM-DD' (Monday).
+    wkey = "week:" + monday.isoformat()
+    row = con.execute("SELECT summary FROM days WHERE date = ?",
+                      (wkey,)).fetchone()
+    if row and row["summary"]:
+        week_html = ('<section><h2 class="sec">The week in review</h2>'
+                     '<div class="entry">' +
+                     "".join(f"<p>{_esc(p)}</p>"
+                             for p in row["summary"].split("\n") if p.strip()) +
+                     "</div></section>")
+    else:
+        week_html = ('<div class="gentle">No weekly summary yet.<br>'
+                     "Run <code>pctx summarize --week</code>.</div>")
+    cards = []
+    today = date.today().isoformat()
+    for d in days:
+        ds = d.isoformat()
+        sticker = get_sticker(con, ds)
+        srow = con.execute("SELECT summary FROM days WHERE date = ?",
+                           (ds,)).fetchone()
+        summary = (srow["summary"] or "").strip() if srow else ""
+        excerpt = summary[:240] + ("…" if len(summary) > 240 else "")
+        apps = app_usage(con, date_str=ds, exclude_away=True)
+        top = (f"{_esc(apps[0][0])} · {apps[0][1]/3600:.1f}h"
+               if apps else "no activity")
+        tags = tag_usage(con, date_str=ds)[:6]
+        tag_html = (" ".join(f"#{_esc(t)}" for t, _ in tags)
+                    if tags else "")
+        future = " future" if ds > today else ""
+        cards.append(
+            f'<a class="daycard{future}" href="/?date={ds}">'
+            f'<div class="dc-top"><span class="dc-date">'
+            f'{d.strftime("%a")} <b>{d.day}</b></span>'
+            + (f'<span class="dc-sticker">{_esc(sticker)}</span>'
+               if sticker else '<span class="dc-sticker"></span>')
+            + "</div>"
+            + (f'<div class="dc-sum">{_esc(excerpt)}</div>' if excerpt else "")
+            + f'<div class="dc-meta"><span class="dc-app">{top}</span>'
+            + (f'<span class="dc-tags">{tag_html}</span>' if tag_html else "")
+            + "</div></a>")
+    prev_m = monday - timedelta(days=7)
+    next_m = monday + timedelta(days=7)
+    def _wl(d: date) -> str:
+        y, w, _ = d.isocalendar()
+        return f"/?week={y}-W{w:02d}"
+    nav = (f'<a href="{_wl(prev_m)}" style="text-decoration:none">'
+           "&larr; Previous week</a>"
+           '<span class="sep">&middot;</span>'
+           '<a href="/" style="text-decoration:none">Today</a>'
+           '<span class="sep">&middot;</span>'
+           f'<a href="{_wl(next_m)}" style="text-decoration:none">'
+           "Next week &rarr;</a>")
+    sunday = days[6]
+    sub = (f"{monday.strftime('%B %-d')} – {sunday.strftime('%B %-d, %Y')}"
+           if sys.platform != "win32"
+           else f"{monday.strftime('%B %#d')} – {sunday.strftime('%B %#d, %Y')}")
+    return _overview_shell(
+        title=f"Week {week} · PrivateContext",
+        heading=f"Week {week}", sub=sub, nav_html=nav,
+        body_html=week_html + '<section><h2 class="sec">The days</h2>'
+        + "".join(cards) + "</section>",
+        theme=theme, accent=accent, extra_css=WEEK_CSS)
+
+
+def _month_page(con, year: int, month: int) -> str:
+    first = date(year, month, 1)
+    ndays = monthrange(year, month)[1]
+    theme, accent = _theme_attrs(con)
+    # Sunday-first: weekday() is Mon=0..Sun=6; Sunday leads the grid.
+    offset = (first.weekday() + 1) % 7
+    start, end = first.isoformat(), (first + timedelta(days=ndays)).isoformat()
+    stickers = {r["date"]: r["sticker"] for r in con.execute(
+        "SELECT date, sticker FROM day_marks WHERE date >= ? AND date < ?",
+        (start, end))}
+    summaries = {r["date"] for r in con.execute(
+        "SELECT date FROM days WHERE date >= ? AND date < ?"
+        " AND summary IS NOT NULL AND summary != ''", (start, end))}
+    notes = {r["date"] for r in con.execute(
+        "SELECT date FROM notes WHERE date >= ? AND date < ?", (start, end))}
+    today = date.today().isoformat()
+    cells = ['<div class="dow">Sun</div><div class="dow">Mon</div>'
+             '<div class="dow">Tue</div><div class="dow">Wed</div>'
+             '<div class="dow">Thu</div><div class="dow">Fri</div>'
+             '<div class="dow">Sat</div>']
+    cells += ['<span class="cell empty"></span>'] * offset
+    for n in range(1, ndays + 1):
+        ds = date(year, month, n).isoformat()
+        stk = stickers.get(ds)
+        stk_html = (f'<span class="stk">{_esc(stk)}</span>'
+                    if stk in STICKER_SET else "")
+        dots = (
+            f'<span class="dots">'
+            f'<span class="dot{" on" if ds in summaries else ""}" title="summary"></span>'
+            f'<span class="dot{" on" if ds in notes else ""}" title="notes"></span>'
+            f"</span>")
+        cls = "cell today" if ds == today else "cell"
+        cells.append(
+            f'<a class="{cls}" href="/?date={ds}">'
+            f'<span class="num">{n}</span>{stk_html}{dots}</a>')
+    prev = first - timedelta(days=1)
+    nxt = first + timedelta(days=ndays)
+    nav = (f'<a href="/?month={prev.year}-{prev.month:02d}" style="text-decoration:none">'
+           "&larr; Previous</a>"
+           '<span class="sep">&middot;</span>'
+           '<a href="/" style="text-decoration:none">Today</a>'
+           '<span class="sep">&middot;</span>'
+           f'<a href="/?month={nxt.year}-{nxt.month:02d}" style="text-decoration:none">'
+           "Next &rarr;</a>")
+    return _overview_shell(
+        title=f"{first.strftime('%B %Y')} · PrivateContext",
+        heading=first.strftime("%B"),
+        sub=str(year), nav_html=nav,
+        body_html='<div class="cal">' + "".join(cells) + "</div>"
+        + '<div class="calnav-note">dots mark days with a summary or notes — '
+          "click any day to open its page</div>",
+        theme=theme, accent=accent, extra_css=MONTH_CSS)
 
 
 def _date_param(qs: dict) -> str | None:
@@ -735,9 +1000,40 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "bad date — use YYYY-MM-DD"}, 400)
             return None
 
+    def _serve_overview(self, make_page, param_name: str) -> bool:
+        """Serve a week/month overview page. Returns True when handled."""
+        qs = parse_qs(urlparse(self.path).query)
+        try:
+            parsed = (_week_param(qs) if param_name == "week"
+                      else _month_param(qs))
+        except ValueError as e:
+            self._json({"error": str(e)}, 400)
+            return True
+        if parsed is None:
+            return False
+        body = self._with_db(
+            lambda db: make_page(db, *parsed)).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return True
+
     def do_GET(self) -> None:
         u = urlparse(self.path)
+        if u.path == "/favicon.ico":
+            # Browsers request this unprompted; 204 keeps the console clean.
+            self.send_response(204)
+            self.end_headers()
+            return
         if u.path == "/":
+            # Read-only overviews: ?week=YYYY-Www and ?month=YYYY-MM.
+            # They come first so a stray ?date= never leaks into them.
+            if self._serve_overview(_week_page, "week"):
+                return
+            if self._serve_overview(_month_page, "month"):
+                return
             # Server-rendered theme + accent + labels: first paint is
             # already correct, no flash.
             theme = self._with_db(lambda db: get_theme(db))
@@ -770,8 +1066,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self._with_db(
                     lambda db: timeline(db, min(limit, 1000), d)))
             elif u.path == "/api/usage":
-                self._json(self._with_db(
-                    lambda db: app_usage(db, date_str=d)))
+                # Lock-screen pseudo-apps never rank as apps; their time
+                # (plus AFK idle) comes back as one honest "Away" line.
+                def _usage(db):
+                    return {"apps": app_usage(db, date_str=d,
+                                              exclude_away=True),
+                            "away": away_usage(db, date_str=d)}
+                self._json(self._with_db(_usage))
             elif u.path == "/api/tagusage":
                 self._json(self._with_db(
                     lambda db: tag_usage(db, date_str=d)))

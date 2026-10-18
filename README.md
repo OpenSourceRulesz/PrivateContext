@@ -87,6 +87,13 @@ Export a shareable copy (screenshots excluded):
 pctx export --scrubbed --out ./my-week.db
 ```
 
+Or export readable Markdown — one `.md` per day with the summary, notes,
+tags, and top apps (days with no data are skipped):
+
+```bash
+pctx export --markdown --from 2026-10-01 --to 2026-10-31 --out ./october/
+```
+
 Data lives in `~/.local/share/privatecontext/context.db`
 (or `$XDG_DATA_HOME/privatecontext/context.db`).
 
@@ -301,14 +308,20 @@ Real lessons from field testing, mostly on managed Windows PCs:
 
 ## MCP server (for AI assistants)
 
-`pctx mcp` runs a first-party MCP server over **stdio** with three tools,
-all returning condensed human-readable text:
+`pctx mcp` runs a first-party MCP server over **stdio** with six tools,
+all returning condensed human-readable text (needs the `[mcp]` extra —
+`mcp` is deliberately not a base dependency, so the install stays tiny):
 
 - `search_timeline(query, date?)` — up to 15 distinct matching moments as
   `HH:MM app — title` lines (repeats collapsed, not 15 copies of one click).
 - `day_summary(date?)` — the stored nightly recap, or a live digest marked
-  un-summarized when none exists yet.
-- `app_usage(date?)` — per-app hours for the day as a compact table.
+  un-summarized when none exists yet. Includes the day's sticker, if you
+  awarded one.
+- `app_usage(date?)` — per-app hours for the day as a compact table
+  (lock-screen time excluded — absence is not activity).
+- `get_notes(date?)` — your handwritten note for the day.
+- `list_tags(date?)` — the day's tags with time credited per tag.
+- `week_summary()` — the stored weekly recap, or a condensed per-day rollup.
 
 Point a client at it (use your real absolute path):
 
@@ -366,8 +379,8 @@ Then ask things like *"what was I doing Tuesday afternoon?"* or
 - **Screenshots are off by default.** Opt in with `pctx capture --screenshots`;
   then only the active monitor is captured, only on app-switch/URL-change,
   downscaled to 640 px wide, stored as JPEG (quality 70).
-- **One-click purge.** The dashboard has a big red button that deletes
-  everything. The CLI is more surgical: `pctx purge --before 90d` drops
+- **One-click purge.** The dashboard footer has a quiet "erase everything"
+  link that deletes everything. The CLI is more surgical: `pctx purge --before 90d` drops
   old events *and* old day summaries, `pctx purge --app <name>` drops one
   app's events. Both print what they'd delete first — nothing happens
   without `--yes`. `pctx export --scrubbed` excludes screenshots and shot events.

@@ -2,19 +2,22 @@
 
 Exposes the local activity diary to AI assistants (Claude Desktop, Cursor,
 Claude Code, …). Every tool returns condensed, human-readable text — small
-models get summaries, never raw event dumps.
+models get summaries, never raw event dumps. Condensed text ONLY: top-N
+aggregates, never event firehoses, never anything screenshot-like.
 
-Run with:  pctx mcp
+Run with:  pctx mcp   (needs the [mcp] extra: pip install "privatecontext[mcp]")
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from mcp.server.mcpserver import MCPServer
 
-from .db import connect, search as db_search
-from .summarize import build_day_digest, day_range, usage_for_range
+from .db import (connect, get_note, get_sticker, is_away_app,
+                 search as db_search, tag_usage)
+from .summarize import (build_day_digest, day_range, usage_for_range,
+                        week_key, week_monday)
 
 server = MCPServer(
     name="privatecontext",
@@ -82,33 +85,101 @@ def day_summary(date: Optional[str] = None) -> str:
     """
     day = date or _today()
     con = _conn()
+    sticker = get_sticker(con, day)
     row = con.execute("SELECT summary, tags FROM days WHERE date = ?",
                       (day,)).fetchone()
     if row and row["summary"]:
         out = f"Summary for {day} (nightly):\n{row['summary']}"
         if row["tags"]:
             out += f"\n\nTags: {row['tags']}"
+        if sticker:
+            out += f"\n\nSticker: {sticker} (awarded by the user)"
         return out
     digest, stats = build_day_digest(con, day)
     if stats.get("n_windows", 0) == 0:
         return f"No activity recorded for {day}."
-    return (f"No nightly summary stored for {day} yet — live digest below.\n\n"
-            f"{digest}")
+    out = (f"No nightly summary stored for {day} yet — live digest below.\n\n"
+           f"{digest}")
+    if sticker:
+        out += f"\n\nSticker: {sticker} (awarded by the user)"
+    return out
 
 
 @server.tool()
 def app_usage(date: Optional[str] = None) -> str:
-    """Time spent per application on a day, as a compact table (hours)."""
+    """Time spent per application on a day, as a compact table (hours).
+
+    Lock-screen pseudo-apps are excluded — absence is not activity.
+    """
     day = date or _today()
     start, end = day_range(day)
     con = _conn()
-    usage = usage_for_range(con, start, end)[:15]
+    usage = [(a, s) for a, s in usage_for_range(con, start, end)
+             if not is_away_app(a)][:15]
     if not usage:
         return f"No activity recorded for {day}."
     total_h = sum(s for _, s in usage) / 3600
     lines = [f"App usage for {day} (total {total_h:.1f}h tracked):"]
     for app, secs in usage:
         lines.append(f"  {(app or 'unknown')[:30]:30s} {secs/3600:6.2f}h")
+    return "\n".join(lines)
+
+
+@server.tool()
+def get_notes(date: Optional[str] = None) -> str:
+    """The user's handwritten note for a day (meeting notes, plans, ideas).
+
+    Notes are the highest-signal content in the diary — the user's own
+    words about what the day meant.
+    """
+    day = date or _today()
+    note = get_note(_conn(), day)
+    if not note:
+        return f"No note written for {day}."
+    return f"Note for {day}:\n{note}"
+
+
+@server.tool()
+def list_tags(date: Optional[str] = None) -> str:
+    """Tags used on a day, with time credited per tag (compact list)."""
+    day = date or _today()
+    tags = tag_usage(_conn(), date_str=day)[:15]
+    if not tags:
+        return f"No tags recorded for {day}."
+    lines = [f"Tags for {day}:"]
+    for tag, secs in tags:
+        lines.append(f"  #{tag}  {secs/3600:.2f}h")
+    return "\n".join(lines)
+
+
+@server.tool()
+def week_summary() -> str:
+    """This week's recap: the stored weekly summary when one exists,
+    otherwise a condensed per-day rollup (top apps only — never raw
+    events). Weeks run Monday to Sunday."""
+    today = _today()
+    con = _conn()
+    monday = week_monday(today)
+    row = con.execute("SELECT summary FROM days WHERE date = ?",
+                      (week_key(today),)).fetchone()
+    if row and row["summary"]:
+        return f"Weekly summary (week of {monday}):\n{row['summary']}"
+    # No stored summary — condensed rollup, one line per day.
+    lines = [f"No stored weekly summary — rollup for the week of {monday}:"]
+    for i in range(6, -1, -1):
+        d = date.today() - timedelta(days=i)
+        ds = d.isoformat()
+        start, end = day_range(ds)
+        apps = [(a, s) for a, s in usage_for_range(con, start, end)
+                if not is_away_app(a)][:3]
+        sticker = get_sticker(con, ds)
+        if not apps:
+            lines.append(f"  {d.strftime('%a %m/%d')}: no activity"
+                         + (f" {sticker}" if sticker else ""))
+            continue
+        detail = ", ".join(f"{a} {s/3600:.1f}h" for a, s in apps)
+        lines.append(f"  {d.strftime('%a %m/%d')}: {detail}"
+                     + (f" {sticker}" if sticker else ""))
     return "\n".join(lines)
 
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "privatecontext"
-version = "0.5.3"
+version = "0.6.0"
 description = "Lightweight, local-first activity tracker"
 readme = "README.md"
 license = { text = "MIT" }
@@ -17,7 +17,10 @@ dependencies = [
     'pynput; sys_platform == "win32" or sys_platform == "darwin"',
     "mss",     # screenshots (opt-in only)
     "pillow",  # JPEG screenshot encoding (opt-in screenshots)
-    "mcp>=2",  # first-party MCP server (`pctx mcp`), stdio transport
+    # NOTE: `mcp` is intentionally NOT a base dependency — it lives in the
+    # [mcp] extra only (`pip install "privatecontext[mcp]"`). `pctx mcp`
+    # prints install instructions when the package is missing. Keep the
+    # base install tiny: no new base dependencies.
 ]
 
 [project.optional-dependencies]
