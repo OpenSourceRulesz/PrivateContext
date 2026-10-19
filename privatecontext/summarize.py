@@ -16,7 +16,8 @@ import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta
 
-from .db import connect, day_range, get_note, init_db
+from .db import (away_usage, connect, day_range, get_note, init_db,
+                 is_away_app)
 
 def _ollama_base() -> str:
     """Ollama server base URL. Honors OLLAMA_HOST (Ollama's own convention,
@@ -62,10 +63,34 @@ def _fmt_hm(ts: float) -> str:
     return datetime.fromtimestamp(ts).astimezone().strftime("%H:%M")
 
 
+# Stored app names that predate (or slip past) capture-time friendly
+# naming. Digest/MCP-only display normalization — history is never
+# rewritten; old ugly rows and new clean rows merge under one label.
+_DIGEST_APP_NAMES = {
+    "chrome_widgetwin_1": "Chromium app",
+    "ms-teams": "Teams",
+    "teamswebview": "Teams",
+    "xamlexplorerhostislandwindow": "Windows Shell",
+    "xamlwindow": "Windows Shell",
+    "windows.ui.core.corewindow": "Windows Shell",
+    "shellexperiencehost": "Windows Shell",
+    "searchhost": "Windows Shell",
+    "slidetoshutdown": "Windows Shell",
+}
+
+
+def display_app(app: str | None) -> str:
+    """Clean display name for a stored app name. Pure function."""
+    return _DIGEST_APP_NAMES.get((app or "").strip().lower(), app or "unknown")
+
+
 def usage_for_range(con, start: float, end: float,
-                    cap_s: float = CAP_S) -> list[tuple[str, float]]:
+                    cap_s: float = CAP_S,
+                    exclude_away: bool = False) -> list[tuple[str, float]]:
     """Seconds per app in [start, end). Each window event owns time until the
-    next event, capped so a forgotten window doesn't claim the afternoon."""
+    next event, capped so a forgotten window doesn't claim the afternoon.
+    With exclude_away, lock-screen pseudo-apps still bound their neighbors'
+    ownership but are skipped in the tally. Names are display-normalized."""
     rows = con.execute(
         "SELECT ts, app FROM events WHERE type = 'window'"
         " AND ts >= ? AND ts < ? ORDER BY ts",
@@ -75,7 +100,10 @@ def usage_for_range(con, start: float, end: float,
     for i, r in enumerate(rows):
         nxt = rows[i + 1]["ts"] if i + 1 < len(rows) else end
         dur = min(max(0.0, nxt - r["ts"]), cap_s)
-        app = r["app"] or "unknown"
+        raw = r["app"] or "unknown"
+        if exclude_away and is_away_app(raw):
+            continue
+        app = display_app(raw)
         usage[app] = usage.get(app, 0.0) + dur
     return sorted(usage.items(), key=lambda kv: -kv[1])
 
@@ -106,12 +134,15 @@ def build_day_digest(con, date_str: str) -> tuple[str, dict]:
     if not windows:
         return f"Day digest for {date_str}: no activity recorded.", stats
 
-    # Per-window durations, aggregated by (app, title).
+    # Per-window durations, aggregated by (app, title). Away apps
+    # (lock screen) bound their neighbors' ownership but are not activity.
     per_window: dict[tuple[str, str], float] = {}
     for i, w in enumerate(windows):
         nxt = windows[i + 1]["ts"] if i + 1 < len(windows) else end
         dur = min(max(0.0, nxt - w["ts"]), CAP_S)
-        key = (w["app"] or "unknown", (w["title"] or "")[:80])
+        if is_away_app(w["app"]):
+            continue
+        key = (display_app(w["app"]), (w["title"] or "")[:80])
         per_window[key] = per_window.get(key, 0.0) + dur
     top_windows = sorted(per_window.items(), key=lambda kv: -kv[1])[:20]
 
@@ -154,9 +185,13 @@ def build_day_digest(con, date_str: str) -> tuple[str, dict]:
     if afk_periods:
         breaks = ", ".join(f"{a}->{b} ({s/60:.0f}m)" for a, b, s in afk_periods[:8])
         lines.append(f"Away breaks: {breaks}.")
+    away_s = away_usage(con, CAP_S, date_str)
+    if away_s >= 60:
+        lines.append(f"Away total (screen locked + idle): {away_s/3600:.2f}h.")
     lines.append("")
     lines.append("Time per app (hours):")
-    for app, secs in usage_for_range(con, start, end)[:12]:
+    for app, secs in usage_for_range(con, start, end,
+                                     exclude_away=True)[:12]:
         lines.append(f"  {app[:28]:28s} {secs/3600:5.2f}h")
     lines.append("")
     lines.append("Top windows by time:")
@@ -166,7 +201,7 @@ def build_day_digest(con, date_str: str) -> tuple[str, dict]:
     lines.append("")
     lines.append("Clicks per app:")
     for r in click_apps:
-        lines.append(f"  {(r['app'] or 'unknown')[:28]:28s} {r['n']}")
+        lines.append(f"  {display_app(r['app'])[:28]:28s} {r['n']}")
     if tokens:
         lines.append("")
         lines.append("Candidate tokens seen in titles (for tagging): "

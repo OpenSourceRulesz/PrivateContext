@@ -106,7 +106,43 @@ _FRIENDLY_APPS = {
     "spotify": "Spotify",
     "zoom": "Zoom",
     "slack": "Slack",
+    "msedgewebview2": "Edge WebView",
 }
+
+# Exe stems / window classes (lowercased) that are pure OS chrome, not
+# apps. Stored as "Windows Shell" so summaries never narrate them.
+# NOTE: lockapp/logonui are deliberately NOT here — they must keep their
+# real names so db.is_away_app() still recognizes them.
+_SHELL_NOISE = frozenset({
+    "xamlexplorerhostislandwindow",
+    "xamlwindow",
+    "windows.ui.core.corewindow",
+    "shellexperiencehost",
+    "searchhost",
+    "slidetoshutdown",
+})
+
+# Raw Win32 window-class -> friendly name, used when the owning process's
+# exe can't be resolved (elevated processes, PID races). The Chromium
+# class is special-cased via the window title (see _app_from_fallback_class)
+# because Chrome, Edge and Electron apps all share it.
+_CLASS_FALLBACK = {
+    "ms-teams": "Teams",
+    "teamswebview": "Teams",
+    "xamlexplorerhostislandwindow": "Windows Shell",
+    "xamlwindow": "Windows Shell",
+    "windows.ui.core.corewindow": "Windows Shell",
+    "shellexperiencehost": "Windows Shell",
+    "searchhost": "Windows Shell",
+    "slidetoshutdown": "Windows Shell",
+}
+
+# Title suffixes identifying the real app behind a Chromium window.
+_CHROMIUM_TITLE_SUFFIXES = (
+    (" - google chrome", "Chrome"),
+    (" - microsoft edge", "Edge"),
+    (" - visual studio code", "VS Code"),
+)
 
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
@@ -125,7 +161,33 @@ def extract_app_name(exe_path: str | None) -> str | None:
         friendly = _FRIENDLY_APPS.get(stem.lower())
         if friendly:
             return friendly
+        if stem.lower() in _SHELL_NOISE:
+            return "Windows Shell"
         return stem.replace("_", " ").title()
+    except Exception:
+        return None
+
+
+def _app_from_fallback_class(class_name: str | None,
+                             title: str | None) -> str | None:
+    """Clean app name when exe resolution failed (Windows fallback path).
+    Pure function — never raises, never returns a raw Win32 class string
+    for known-noisy classes."""
+    try:
+        cls = (class_name or "").strip().lower()
+        if not cls:
+            return None
+        if cls in _CLASS_FALLBACK:
+            return _CLASS_FALLBACK[cls]
+        if cls == "chrome_widgetwin_1":
+            # Shared by Chrome, Edge and Electron apps — the title
+            # disambiguates ("... - Microsoft Edge").
+            t = (title or "").strip().lower()
+            for suffix, friendly in _CHROMIUM_TITLE_SUFFIXES:
+                if t.endswith(suffix):
+                    return friendly
+            return "Chromium app"
+        return class_name  # unknown class: keep old raw behavior
     except Exception:
         return None
 
@@ -176,7 +238,7 @@ def _active_window_windows() -> dict | None:
         if app is None:
             cbuf = ctypes.create_unicode_buffer(256)
             user32.GetClassNameW(hwnd, cbuf, 256)
-            app = cbuf.value or None
+            app = _app_from_fallback_class(cbuf.value, tbuf.value)
         return {"app": app, "title": tbuf.value or None}
     except Exception as e:  # a watcher must never kill the loop
         warn_once("win-err", f"windows window watcher error: {e}")
