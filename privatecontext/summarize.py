@@ -46,10 +46,18 @@ def ollama_reachable(timeout: float = 3) -> bool:
 
 
 def ollama_hint() -> str:
-    return (f"can't reach ollama at {OLLAMA_HOST} — is it installed?\n"
-            "  Install it:  https://ollama.com/download  (then restart this terminal)\n"
-            "  Then run:    ollama pull qwen2:1.5b\n"
-            "  And start:   ollama serve  (usually starts automatically)\n"
+    return (f"can't reach ollama at {OLLAMA_HOST} — but summaries are "
+            "optional, and you have options:\n"
+            "  No AI at all: the journal, timeline and search work fine "
+            "without any model.\n"
+            "  Bring your own model: run `pctx summarize --dry-run` and "
+            "paste the digest into\n"
+            "    any model you like — or connect an MCP client (`pctx mcp`) "
+            "and have it\n"
+            "    summarize the get_digest output for you.\n"
+            "  Built-in local path: install Ollama "
+            "(https://ollama.com/download), then\n"
+            "    `ollama pull qwen2:1.5b` and `ollama serve`.\n"
             "  (set OLLAMA_HOST=host:port if your server runs elsewhere)")
 DEFAULT_MODEL = "qwen2:1.5b"
 # ~4000 tokens. The digest is built to stay far under this.
@@ -76,6 +84,11 @@ _DIGEST_APP_NAMES = {
     "shellexperiencehost": "Windows Shell",
     "searchhost": "Windows Shell",
     "slidetoshutdown": "Windows Shell",
+    "shell_traywnd": "Windows Shell",
+    "zoomhybridconf": "Zoom",
+    "msedgewebview2": "Edge WebView",
+    "csc ui": "Cisco Secure Client",
+    "csc_ui": "Cisco Secure Client",
 }
 
 
@@ -159,11 +172,18 @@ def build_day_digest(con, date_str: str) -> tuple[str, dict]:
             afk_periods.append((_fmt_hm(r["ts"] - idle_s), _fmt_hm(r["ts"]), idle_s))
     stats["afk_periods"] = len(afk_periods)
 
-    click_apps = con.execute(
+    # Aggregate clicks by DISPLAY name: grouping in SQL by the raw stored
+    # name and normalizing afterwards produced duplicate digest rows
+    # ("Teams 58 / Teams 42 / Teams 16") — merge first, then rank.
+    click_counts: dict[str, int] = {}
+    for r in con.execute(
         "SELECT app, COUNT(*) AS n FROM events WHERE type = 'click'"
-        " AND ts >= ? AND ts < ? GROUP BY app ORDER BY n DESC LIMIT 10",
+        " AND ts >= ? AND ts < ? GROUP BY app",
         (start, end),
-    ).fetchall()
+    ):
+        name = display_app(r["app"])
+        click_counts[name] = click_counts.get(name, 0) + r["n"]
+    click_apps = sorted(click_counts.items(), key=lambda kv: -kv[1])[:10]
 
     # Candidate tokens for tagging (ticket IDs, PR refs), from titles only.
     tokens: list[str] = []
@@ -200,8 +220,8 @@ def build_day_digest(con, date_str: str) -> tuple[str, dict]:
         lines.append(f"  {h:4.1f}h  {app[:20]:20s} {title}")
     lines.append("")
     lines.append("Clicks per app:")
-    for r in click_apps:
-        lines.append(f"  {display_app(r['app'])[:28]:28s} {r['n']}")
+    for app, n in click_apps:
+        lines.append(f"  {app[:28]:28s} {n}")
     if tokens:
         lines.append("")
         lines.append("Candidate tokens seen in titles (for tagging): "

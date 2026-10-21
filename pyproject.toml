@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "privatecontext"
-version = "0.6.1"
-description = "Lightweight, local-first activity tracker"
+version = "0.6.2"
+description = "A private, local-first computer journal — your day, written down, on your machine only"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
@@ -15,13 +15,21 @@ dependencies = [
     # headers to build. `pip install "privatecontext[full]"` forces it
     # everywhere. The capture loop degrades gracefully without it.
     'pynput; sys_platform == "win32" or sys_platform == "darwin"',
-    "mss",     # screenshots (opt-in only)
-    "pillow",  # JPEG screenshot encoding (opt-in screenshots)
     # NOTE: `mcp` is intentionally NOT a base dependency — it lives in the
     # [mcp] extra only (`pip install "privatecontext[mcp]"`). `pctx mcp`
     # prints install instructions when the package is missing. Keep the
     # base install tiny: no new base dependencies.
+    # NOTE: `mss`/`pillow` are intentionally NOT base dependencies either.
+    # The user rejected the screenshots feature on security grounds
+    # (2026-10-16 product decision), so the libraries live in the
+    # [screenshots] extra only — the default install carries no
+    # screenshot libraries at all. The capture code imports them lazily
+    # and degrades gracefully when they're absent.
 ]
+
+[project.urls]
+Homepage = "https://github.com/OpenSourceRulesz/PrivateContext"
+Repository = "https://github.com/OpenSourceRulesz/PrivateContext"
 
 [project.optional-dependencies]
 full = [
@@ -29,6 +37,10 @@ full = [
 ]
 mcp = [
     "mcp>=2",  # first-party MCP server (`pctx mcp`), stdio transport
+]
+screenshots = [
+    "mss",     # screen capture for the opt-in --screenshots flag
+    "pillow",  # JPEG screenshot encoding
 ]
 
 [project.scripts]

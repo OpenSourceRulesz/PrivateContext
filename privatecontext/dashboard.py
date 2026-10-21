@@ -227,6 +227,16 @@ code{font-family:ui-monospace,SFMono-Regular,monospace;font-size:0.9em}
 </div>
 <div id="results"></div>
 <div id="emptyDay" class="gentle" style="display:none">Nothing recorded this day.</div>
+<div id="firstRun" class="gentle" style="display:none">
+<p style="font-size:1.3em;color:var(--ink)">Welcome to your journal.</p>
+<p>PrivateContext keeps a private record of your day &mdash; which apps you
+used, what you worked on, when you were away. Everything stays on this
+machine; nothing is uploaded, ever.</p>
+<p>Nothing is being recorded yet. Start capture in a terminal and leave it running:</p>
+<p><code>pctx capture</code></p>
+<p>Or preview a synthetic day first with <code>pctx capture --simulate</code>.</p>
+<p>Summaries are optional &mdash; the journal works with no AI at all.</p>
+</div>
 <div id="journalTab">
 <section id="entrySec">
 <h2 class="sec"><span id="entryH">Today&rsquo;s summary</span><span class="entryctl"><button id="regenBtn" onclick="regenEntry()" title="Ask the local model to write this summary again">&#8635; regenerate</button><button class="danger" onclick="removeEntry()" title="Delete this summary">remove</button></span></h2>
@@ -621,6 +631,8 @@ async function refresh(){
     const tl = await j('/api/timeline?limit=200&date='+curDate);
     const u = await j('/api/usage?date='+curDate);
     const t = await j('/api/tagusage?date='+curDate);
+    const fr = await j('/api/firstrun');
+    const firstRun = !!fr.empty;
     const hasEntry = await loadEntry();
     const hasEvents = tl.length > 0;
     document.getElementById('timeline').innerHTML =
@@ -632,8 +644,12 @@ async function refresh(){
       (u.apps.length || u.away >= 60) ? '' : 'none';
     document.getElementById('tagsec').style.display = t.length ? '' : 'none';
     document.getElementById('hoursSec').style.display = hasEvents ? '' : 'none';
+    document.getElementById('firstRun').style.display =
+      firstRun ? '' : 'none';
+    document.getElementById('entrySec').style.display =
+      firstRun ? 'none' : '';
     document.getElementById('emptyDay').style.display =
-      (!hasEvents && !hasEntry) ? '' : 'none';
+      (!firstRun && !hasEvents && !hasEntry) ? '' : 'none';
     document.getElementById('colophon').textContent =
       tl.length+' event'+(tl.length==1?'':'s')+' \u00b7 kept on this machine \u00b7 nothing uploaded';
     renderMasthead();
@@ -1078,6 +1094,12 @@ class Handler(BaseHTTPRequestHandler):
                     lambda db: tag_usage(db, date_str=d)))
             else:
                 self._json(self._with_db(lambda db: day_recap(db, d)))
+        elif u.path == "/api/firstrun":
+            # True while the database holds no events at all — the page
+            # shows a welcome panel instead of a barren journal.
+            self._json(self._with_db(lambda db: {
+                "empty": db.execute(
+                    "SELECT COUNT(*) FROM events").fetchone()[0] == 0}))
         elif u.path == "/api/search":
             q = parse_qs(u.query).get("q", [""])[0]
             self._json(self._with_db(lambda db: search(db, q)))

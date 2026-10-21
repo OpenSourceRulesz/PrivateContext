@@ -106,6 +106,23 @@ def day_summary(date: Optional[str] = None) -> str:
 
 
 @server.tool()
+def get_digest(date: Optional[str] = None) -> str:
+    """The condensed day digest itself — per-app hours, top windows,
+    clicks per app, away breaks, and the day's note.
+
+    This is the exact text `pctx summarize --dry-run` prints and the
+    Ollama summarizer reads. Use it to write a summary yourself: no
+    Ollama and no stored summary need to exist.
+    """
+    day = date or _today()
+    con = _conn()
+    digest, stats = build_day_digest(con, day)
+    if stats.get("n_windows", 0) == 0:
+        return f"No activity recorded for {day}."
+    return digest
+
+
+@server.tool()
 def app_usage(date: Optional[str] = None) -> str:
     """Time spent per application on a day, as a compact table (hours).
 

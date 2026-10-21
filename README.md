@@ -1,15 +1,19 @@
-# PrivateContext (v0)
+# PrivateContext
 
-A lightweight, local-first activity tracker. It answers questions like
+A private, local-first computer journal. It answers questions like
 *"what was I doing when I fixed eduroam last Tuesday?"* — from your own
 machine, with nothing ever leaving it.
 
 The idea: an **event log beats pixels**. Instead of recording video of your
 screen 24/7 (heavy, creepy), PrivateContext logs *events* — active window,
-URL, clicks, idle periods — into a local SQLite database. A day of tracking
-is ~1 MB, not gigabytes. Full-text search is built in, a nightly Ollama
-summarizer writes plain-language day recaps, and a first-party MCP server
-lets AI assistants query the diary.
+URL, clicks, idle periods — into a local SQLite database. A day is ~1 MB,
+not gigabytes. The journal, timeline, and full-text search work with
+**no AI at all** — no account, no API key, no model to download.
+
+Summaries are an optional layer on top: a small local model (via Ollama)
+can turn a day into a plain-language recap — or bring your own model,
+by pasting the condensed digest into it or letting it read the journal
+through the built-in MCP server. See [Summaries (optional)](#summaries-optional).
 
 ## 10-minute setup
 
@@ -259,12 +263,18 @@ a folder named `New Folder` won't tag. Tags are lowercase, deduped, and
 cheap to recompute — `pctx retag [--since YYYY-MM-DD]` re-runs tagging
 over untagged history (e.g. data imported before tagging existed).
 
-## Nightly summaries (Ollama)
+## Summaries (optional)
 
-Once a day, a small local model reads a *condensed digest* of the day —
-per-app hours, top windows, away breaks, click counts, never raw event dumps
-(the digest is capped at ~4k tokens so a 1.5B model can handle it) — and
-writes a 3–6 bullet recap plus auto-tags into the database.
+The journal is complete without summaries — capture, timeline, and search
+never need a model. If you'd like a day turned into a plain-language
+recap, there are two paths, and both start from the same *condensed
+digest* of the day: per-app hours, top windows, away breaks, click
+counts, never raw event dumps (the digest is capped at ~4k tokens, so
+even a 1.5B model can handle it).
+
+**Path 1 — built-in, local (Ollama).** A small model on your own machine
+reads the digest and writes a 3–6 bullet recap plus auto-tags into the
+database:
 
 ```bash
 ollama serve                  # in one terminal, once
@@ -282,8 +292,13 @@ Run it nightly with cron:
 30 23 * * * /abs/path/to/privatecontext/.venv/bin/pctx summarize >> ~/.local/share/privatecontext/summarize.log 2>&1
 ```
 
+**Path 2 — bring your own model.** No Ollama required: run
+`pctx summarize --dry-run` and paste the digest into any model you
+already use, or connect an MCP client (see below) and ask it to write
+the summary from the `get_digest` tool's output.
+
 If Ollama isn't reachable, `pctx summarize` prints a plain-English hint
-(`ollama serve` / `ollama pull …`) and exits non-zero — no tracebacks.
+pointing at both paths and exits non-zero — no tracebacks.
 
 ## Troubleshooting
 
@@ -308,7 +323,7 @@ Real lessons from field testing, mostly on managed Windows PCs:
 
 ## MCP server (for AI assistants)
 
-`pctx mcp` runs a first-party MCP server over **stdio** with six tools,
+`pctx mcp` runs a first-party MCP server over **stdio** with seven tools,
 all returning condensed human-readable text (needs the `[mcp]` extra —
 `mcp` is deliberately not a base dependency, so the install stays tiny):
 
@@ -319,6 +334,9 @@ all returning condensed human-readable text (needs the `[mcp]` extra —
   awarded one.
 - `app_usage(date?)` — per-app hours for the day as a compact table
   (lock-screen time excluded — absence is not activity).
+- `get_digest(date?)` — the condensed day digest itself (per-app hours,
+  top windows, clicks, the day's note), so the connected model can write
+  a summary even when no Ollama summary exists.
 - `get_notes(date?)` — your handwritten note for the day.
 - `list_tags(date?)` — the day's tags with time credited per tag.
 - `week_summary()` — the stored weekly recap, or a condensed per-day rollup.
@@ -376,7 +394,9 @@ Then ask things like *"what was I doing Tuesday afternoon?"* or
   to timestamp activity for idle detection.
 - **URLs are stripped.** Query params and fragments (`?utm_source=…`,
   `&sys_id=…`) are removed before anything is stored.
-- **Screenshots are off by default.** Opt in with `pctx capture --screenshots`;
+- **Screenshots are off by default** — and the screenshot libraries
+  aren't even in the default install. Opt in with
+  `pip install "privatecontext[screenshots]"` plus `pctx capture --screenshots`;
   then only the active monitor is captured, only on app-switch/URL-change,
   downscaled to 640 px wide, stored as JPEG (quality 70).
 - **One-click purge.** The dashboard footer has a quiet "erase everything"

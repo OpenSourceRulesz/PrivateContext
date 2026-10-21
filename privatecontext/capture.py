@@ -105,8 +105,10 @@ _FRIENDLY_APPS = {
     "notepad": "Notepad",
     "spotify": "Spotify",
     "zoom": "Zoom",
+    "zoomhybridconf": "Zoom",
     "slack": "Slack",
     "msedgewebview2": "Edge WebView",
+    "csc_ui": "Cisco Secure Client",
 }
 
 # Exe stems / window classes (lowercased) that are pure OS chrome, not
@@ -120,6 +122,7 @@ _SHELL_NOISE = frozenset({
     "shellexperiencehost",
     "searchhost",
     "slidetoshutdown",
+    "shell_traywnd",
 })
 
 # Raw Win32 window-class -> friendly name, used when the owning process's
@@ -135,6 +138,7 @@ _CLASS_FALLBACK = {
     "shellexperiencehost": "Windows Shell",
     "searchhost": "Windows Shell",
     "slidetoshutdown": "Windows Shell",
+    "shell_traywnd": "Windows Shell",
 }
 
 # Title suffixes identifying the real app behind a Chromium window.
