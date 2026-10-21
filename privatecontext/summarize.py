@@ -50,7 +50,7 @@ def ollama_hint() -> str:
             "optional, and you have options:\n"
             "  No AI at all: the journal, timeline and search work fine "
             "without any model.\n"
-            "  Bring your own model: run `pctx summarize --dry-run` and "
+            "  Bring your own model: run `pctx summarize --preview` and "
             "paste the digest into\n"
             "    any model you like — or connect an MCP client (`pctx mcp`) "
             "and have it\n"

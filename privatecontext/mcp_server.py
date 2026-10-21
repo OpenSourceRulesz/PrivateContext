@@ -110,7 +110,7 @@ def get_digest(date: Optional[str] = None) -> str:
     """The condensed day digest itself — per-app hours, top windows,
     clicks per app, away breaks, and the day's note.
 
-    This is the exact text `pctx summarize --dry-run` prints and the
+    This is the exact text `pctx summarize --preview` prints and the
     Ollama summarizer reads. Use it to write a summary yourself: no
     Ollama and no stored summary need to exist.
     """
