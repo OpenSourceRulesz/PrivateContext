@@ -41,6 +41,22 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_up(args: argparse.Namespace) -> int:
+    from .launcher import up
+    db = _resolve_db(args.db) if args.db else None
+    return up(db, port=args.port)
+
+
+def cmd_down(args: argparse.Namespace) -> int:
+    from .launcher import down
+    return down()
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    from .launcher import status
+    return status()
+
+
 def _fmt_dur_md(secs: float) -> str:
     secs = round(secs)
     if secs >= 3600:
@@ -189,11 +205,12 @@ def cmd_summarize(args: argparse.Namespace) -> int:
     from datetime import date as _date
     db = _resolve_db(args.db) if args.db else None
     date_str = args.date or _date.today().isoformat()
+    preview = args.preview or args.dry_run  # --dry-run kept as a silent alias
     if args.week:
         return summarize_week(db, date_str,
-                               model=args.model, dry_run=args.dry_run)
+                               model=args.model, dry_run=preview)
     return summarize_day(db, date_str,
-                         model=args.model, dry_run=args.dry_run)
+                         model=args.model, dry_run=preview)
 
 
 def cmd_purge(args: argparse.Namespace) -> int:
@@ -256,6 +273,16 @@ def build_parser() -> argparse.ArgumentParser:
                     help=f"database path (default: {default_db_path()})")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
+    u = sub.add_parser("up", help="start capture + dashboard in the background (one command)")
+    u.add_argument("--port", type=int, default=18790)
+    u.set_defaults(func=cmd_up)
+
+    dn = sub.add_parser("down", help="stop the background capture + dashboard")
+    dn.set_defaults(func=cmd_down)
+
+    st = sub.add_parser("status", help="show whether capture + dashboard are running")
+    st.set_defaults(func=cmd_status)
+
     c = sub.add_parser("capture", help="run the event capture loop")
     c.add_argument("--simulate", action="store_true",
                    help="write a synthetic workday instead of watching the OS")
@@ -286,8 +313,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="summarize the trailing 7 days ending at --date")
     s.add_argument("--model", default=DEFAULT_MODEL,
                    help=f"Ollama model (default: {DEFAULT_MODEL})")
-    s.add_argument("--dry-run", action="store_true",
+    s.add_argument("--preview", action="store_true",
                    help="print the condensed digest without calling Ollama")
+    # --dry-run kept as a silent alias (same behavior, no model call)
+    s.add_argument("--dry-run", action="store_true", help=argparse.SUPPRESS)
     s.set_defaults(func=cmd_summarize)
 
     p = sub.add_parser("purge", help="delete old or app-specific captured data")

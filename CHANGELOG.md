@@ -2,6 +2,16 @@
 
 What changed, in plain language. Newest first.
 
+## 0.6.3
+
+- One command runs everything: `pctx up` starts capture and the
+  dashboard in the background (no terminal stays occupied), `pctx down`
+  stops both, `pctx status` shows what's running. If the dashboard has
+  to move to a fallback port, `pctx up` reports the port it's actually on.
+- `pctx summarize --preview` is the new name for `--dry-run` — same
+  behavior (print the condensed digest, call no model). `--dry-run`
+  keeps working as a silent alias.
+
 ## 0.6.2
 
 - Fixed duplicate rows in the summary digest's "Clicks per app" section —

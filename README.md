@@ -62,6 +62,15 @@ Start capturing for real (Ctrl-C to stop):
 pctx capture
 ```
 
+Or run everything with one command — capture and the dashboard start
+in the background and no terminal stays occupied:
+
+```bash
+pctx up        # start capture + dashboard
+pctx status    # what's running
+pctx down      # stop both
+```
+
 ## The journal
 
 ```bash
@@ -280,7 +289,7 @@ database:
 ollama serve                  # in one terminal, once
 ollama pull qwen2:1.5b        # small default model; any Ollama model works
 
-pctx summarize --dry-run      # preview the digest without calling a model
+pctx summarize --preview      # preview the digest without calling a model
 pctx summarize                # summarize today
 pctx summarize --date 2026-10-12 --model qwen2:7b
 pctx summarize --week         # trailing 7 days, one call, stored as week:YYYY-MM-DD
@@ -293,7 +302,7 @@ Run it nightly with cron:
 ```
 
 **Path 2 — bring your own model.** No Ollama required: run
-`pctx summarize --dry-run` and paste the digest into any model you
+`pctx summarize --preview` and paste the digest into any model you
 already use, or connect an MCP client (see below) and ask it to write
 the summary from the `get_digest` tool's output.
 
