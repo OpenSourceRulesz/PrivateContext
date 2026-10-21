@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "privatecontext"
-version = "0.6.3"
+version = "0.6.4"
 description = "A private, local-first computer journal — your day, written down, on your machine only"
 readme = "README.md"
 license = { text = "MIT" }

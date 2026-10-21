@@ -2,6 +2,13 @@
 
 What changed, in plain language. Newest first.
 
+## 0.6.4
+
+- Fixed `pctx up` failing with "capture failed to start" when run from a
+  folder containing a `privatecontext.py` file: the launcher now starts
+  its background processes from a neutral folder, so a stray file can no
+  longer shadow the installed package.
+
 ## 0.6.3
 
 - One command runs everything: `pctx up` starts capture and the

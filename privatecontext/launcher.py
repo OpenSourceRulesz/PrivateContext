@@ -93,6 +93,12 @@ def _spawn(name: str, argv: list[str]) -> int:
     kwargs: dict = dict(
         stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
         close_fds=True,
+        # Neutral cwd: children are spawned as `python -m ...`, which puts
+        # the cwd at sys.path[0] — if the user runs `pctx up` from a folder
+        # containing a stray privatecontext.py, that file would shadow the
+        # installed package and the child dies with ModuleNotFoundError.
+        # The run dir is ours, so nothing can shadow from there.
+        cwd=str(_run_dir()),
     )
     if IS_WINDOWS:
         kwargs["creationflags"] = (
